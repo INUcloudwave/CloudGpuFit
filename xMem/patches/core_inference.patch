@@ -1,0 +1,120 @@
+diff --git a/exp/trainer/train_loop.py b/exp/trainer/train_loop.py
+index 52183184e..5e5d30a4e 100755
+--- a/exp/trainer/train_loop.py
++++ b/exp/trainer/train_loop.py
+@@ -163,3 +163,53 @@ def transformer_mixed_precision_train_loop(
+         raise RuntimeError(f"Training failed: {e}") from e
+     finally:
+         [_plugin.stop() for _plugin in plugins]
++
++
++def transformer_infer_loop(
++    model, data_loader, epochs, device, optimizer,
++    iterations=2, lr=0.001, plugins=[], zero_grad_mode=None,
++):
++    """Phase 1a: prefill only, use_cache=False, no grad."""
++    import os
++    [p.start() for p in plugins]
++    time.sleep(2)
++    try:
++        model.to(device)
++        model.eval()
++        with torch.no_grad():
++            for epoch in range(epochs):
++                for index, batch in enumerate(data_loader):
++                    [p.step() for p in plugins]
++                    batch = {k: v.to(device) for k, v in batch.items()
++                             if k != "labels"}
++                    if batch["input_ids"].numel() == 0 or \
++                       batch["input_ids"].shape[-1] == 0:
++                        continue
++                    model(**batch, use_cache=False)
++                    if index == iterations:
++                        break
++    except Exception as e:
++        raise RuntimeError(f"Inference failed: {e}") from e
++    finally:
++        [p.stop() for p in plugins]
++
++
++def conv_infer_loop(
++    model, data_loader, epochs, device, optimizer,
++    iterations=None, lr=0.001, plugins=[], zero_grad_mode=None,
++):
++    [p.start() for p in plugins]
++    model.to(device)
++    model.eval()
++    try:
++        with torch.no_grad():
++            for epoch in range(epochs):
++                for index, (inputs, labels) in enumerate(data_loader):
++                    [p.step() for p in plugins]
++                    model(inputs.to(device))
++                    if iterations is not None and index >= iterations:
++                        break
++    except Exception as e:
++        raise RuntimeError(f"Inference failed: {e}") from e
++    finally:
++        [p.stop() for p in plugins]
+diff --git a/exp/trainer/trainer.py b/exp/trainer/trainer.py
+index 7df3b4842..df03775ca 100755
+--- a/exp/trainer/trainer.py
++++ b/exp/trainer/trainer.py
+@@ -11,6 +11,8 @@ from perf_estimator.models import AllModels
+ from .train_loop import (
+     conv_train_loop,
+     transformer_train_loop,
++    transformer_infer_loop,
++    conv_infer_loop,
+     transformer_mixed_precision_train_loop,
+ )
+ 
+@@ -195,10 +197,20 @@ class ModelTrainer:
+                 )
+             else:
+                 print(f"Using Mixed Precision (FP32) Training loop.")
+-                func = transformer_train_loop
++                import os
++                if os.environ.get("XMEM_INFER") == "1":
++                    print("Using Transformer INFERENCE loop.")
++                    func = transformer_infer_loop
++                else:
++                    func = transformer_train_loop
+         else:
+             print(f"Using Convolutional Training loop.")
+-            func = conv_train_loop
++            import os
++            if os.environ.get("XMEM_INFER") == "1":
++                print("Using Conv INFERENCE loop.")
++                func = conv_infer_loop
++            else:
++                func = conv_train_loop
+ 
+         _conf = self._config.model_copy(deep=True)
+         try:
+diff --git a/perf_estimator/estimator.py b/perf_estimator/estimator.py
+index e9b271b12..7c3dc02d6 100755
+--- a/perf_estimator/estimator.py
++++ b/perf_estimator/estimator.py
+@@ -76,7 +76,8 @@ class _Estimator(ABC):
+         assert iteration_index > 0
+         memory_activity: List[MemoryBlock] = []
+         iteration = self.profiler.get_iteration(iteration_index)
+-        zero_grad_time = iteration.zero_grad_time[0]
++        _zgt = iteration.zero_grad_time
++        zero_grad_time = _zgt[0] if _zgt else None
+         if zero_grad_time is not None and zero_grad_time > iteration.optimiser_step[1]:
+             # zero_grad > end of optimiser step time means that all gradients are zeroed after optimisation
+             # optimiser.zero_grad() is called in every end of the iteration
+@@ -296,6 +297,11 @@ class Estimator(_Estimator):
+                     model_blocks_start_instant = memory._start
+                     model_blocks_start_instant._value["ts"] = index
+                     model_blocks.append(memory)
++            import os
++            if os.environ.get("XMEM_INFER") == "1":
++                _pb = int(os.environ.get("XMEM_PARAM_BYTES", "0"))
++                if _pb > 0:
++                    model_blocks.append(self.create_memory_block(_pb, 0))
+             self._model_memory = model_blocks
+         return copy.deepcopy(self._model_memory)
+ 
