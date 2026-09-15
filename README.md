@@ -3,6 +3,17 @@
 CPU만으로 추론 워크로드의 GPU VRAM 필요량을 예측합니다. 실제 GPU 없이도
 `required_vram_gb` 값을 얻어 AWS GPU 인스턴스 후보를 1차 필터링하는 데 씁니다.
 
+> **`localPrototype` 브랜치 안내**: 이 브랜치에는 이 도구를 실제로 감싸는
+> 로컬 프로토타입 2개가 추가되어 있습니다. 아직 `main`에는 없는, 검토용 코드입니다.
+> - [`web/`](web/README.md) — 사용자 입력 마법사 (Next.js). 모델 검색 → 유형
+>   자동 판별 → 유형별 파라미터 입력 → 예측 실행.
+> - [`orchestrator/`](orchestrator/README.md) — `web/`과 이 저장소의
+>   `predict_vram.py` 사이를 잇는 FastAPI 서버. job 큐·캐싱, 컨테이너 자동
+>   프로비저닝(`bash setup.sh`를 사용자가 직접 안 돌려도 되게).
+>
+> 아래 1~5번 섹션은 이 도구를 CLI로 직접 쓸 때의 설명이고, `web`/`orchestrator`를
+> 쓸 때는 각 폴더의 README를 먼저 보세요.
+
 ## 1. 설치
 
 ```bash
