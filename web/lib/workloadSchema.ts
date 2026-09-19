@@ -145,6 +145,94 @@ export function defaultValuesFor(
   return values;
 }
 
+export interface ScenarioPreset {
+  id: string;
+  label: string;
+  dtype: Dtype;
+  /** Only the keys this scenario actually sets — merged over defaultValuesFor()'s
+   * output, so e.g. vision_cls's resolution still comes from the model config,
+   * never from the preset (a bigger "task size" must never imply a resolution
+   * the model doesn't actually support). */
+  values: Record<string, unknown>;
+}
+
+// Preset numbers, not measured results: convenience starting points for
+// "small/medium/large"-shaped tasks, not validated against the prediction
+// engine's accuracy or a model's actual context limit. Shown to the user as
+// such, and re-derived from real evidence later.
+export const SCENARIO_PRESETS: Record<Exclude<WorkloadType, "unsupported">, ScenarioPreset[]> = {
+  decoder_llm: [
+    {
+      id: "short_chat",
+      label: "짧은 대화 응답",
+      dtype: "fp16",
+      values: { batch_size: 1, seq_len: 128, mode: "generate", max_new_tokens: 64 },
+    },
+    {
+      id: "doc_summary",
+      label: "문서 요약 요청",
+      dtype: "fp16",
+      values: { batch_size: 4, seq_len: 512, mode: "generate", max_new_tokens: 256 },
+    },
+    {
+      id: "batch_processing",
+      label: "대량 배치 처리",
+      dtype: "fp16",
+      values: { batch_size: 8, seq_len: 1024, mode: "generate", max_new_tokens: 256 },
+    },
+  ],
+  vision_cls: [
+    { id: "small_batch", label: "소량 이미지 분류", dtype: "fp16", values: { batch_size: 1 } },
+    { id: "medium_batch", label: "보통 배치", dtype: "fp16", values: { batch_size: 8 } },
+    { id: "large_batch", label: "대량 배치", dtype: "fp16", values: { batch_size: 32 } },
+  ],
+  text_encdec: [
+    {
+      id: "short_translation",
+      label: "짧은 번역",
+      dtype: "fp16",
+      values: { batch_size: 1, encoder_seq_len: 64, decoder_seq_len: 64, mode: "prefill", max_new_tokens: null },
+    },
+    {
+      id: "medium_summary",
+      label: "중간 길이 문서 요약",
+      dtype: "fp16",
+      values: { batch_size: 1, encoder_seq_len: 512, decoder_seq_len: 128, mode: "generate", max_new_tokens: 128 },
+    },
+    {
+      id: "long_transform",
+      label: "긴 문서 변환",
+      dtype: "fp16",
+      values: { batch_size: 1, encoder_seq_len: 1024, decoder_seq_len: 256, mode: "generate", max_new_tokens: 256 },
+    },
+  ],
+  audio_encdec: [],
+};
+
+export function applyScenario(
+  preset: ScenarioPreset,
+  type: Exclude<WorkloadType, "unsupported">,
+  config: ModelConfigFields
+): { dtype: Dtype; values: Record<string, unknown> } {
+  return { dtype: preset.dtype, values: { ...defaultValuesFor(type, config), ...preset.values } };
+}
+
+/** Short "batch=… · 입력 …" line for a scenario card — same values a click
+ * would apply, so nothing on the card is a surprise once picked. */
+export function describeScenario(type: Exclude<WorkloadType, "unsupported">, preset: ScenarioPreset): string {
+  const v = preset.values;
+  const parts = [`batch=${v.batch_size}`];
+  if (type === "decoder_llm") {
+    parts.push(`입력 ${v.seq_len} 토큰`);
+    if (v.mode === "generate") parts.push(`생성 ${v.max_new_tokens} 토큰`);
+  } else if (type === "text_encdec") {
+    parts.push(`인코더 ${v.encoder_seq_len}`, `디코더 ${v.decoder_seq_len}`);
+    if (v.mode === "generate") parts.push(`생성 ${v.max_new_tokens} 토큰`);
+  }
+  parts.push(preset.dtype);
+  return parts.join(" · ");
+}
+
 /**
  * Mirrors orchestrator/workload_params.py. The server re-checks all of this —
  * this exists so the user sees the problem next to the field instead of as a

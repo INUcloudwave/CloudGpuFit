@@ -2,21 +2,30 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { ModelConfigFields, WorkloadType } from "@/lib/types";
+import type { BudgetPeriod, CreateJobResponse, Dtype, ModelConfigFields, WorkloadType } from "@/lib/types";
+import { DEFAULT_AWS_REGION } from "@/lib/awsRegions";
+import {
+  DTYPE_FIELD,
+  applyScenario,
+  buildPayload,
+  collectFieldErrors,
+  defaultValuesFor,
+  type ScenarioPreset,
+} from "@/lib/workloadSchema";
 import ModelSearchStep from "./ModelSearchStep";
 import ParamsStep from "./ParamsStep";
-import JobFlow from "./JobFlow";
+import ScenarioStep from "./ScenarioStep";
+import SloGate from "./SloGate";
 
 interface ClassifiedModel {
   modelId: string;
   type: Exclude<WorkloadType, "unsupported" | "audio_encdec">;
   config: ModelConfigFields;
-  /** Unused for now — carried through so a later step can send it on to
-   * xMem/eager_runtime instead of them re-fetching config.json themselves. */
   rawConfig: Record<string, unknown>;
 }
 
 type SetupState = "idle" | "provisioning" | "ready" | "error";
+type ParamsView = "manual" | "scenario";
 
 const HEALTH_POLL_MS = 5000;
 
@@ -25,6 +34,10 @@ const HEALTH_POLL_MS = 5000;
 // if the OTHER in-flight setup call never finishes.
 const SETUP_POLL_INTERVAL_MS = 2000;
 const SETUP_POLL_MAX_ATTEMPTS = 30; // ~60s
+
+// Mirrors orchestrator/main.py SUPPORTED_TYPES — the types every stage of
+// the pipeline can actually run, not just the ones with an input form.
+const SUPPORTED_FOR_EXECUTION: WorkloadType[] = ["decoder_llm", "vision_cls", "text_encdec"];
 
 export default function Wizard() {
   const router = useRouter();
@@ -35,6 +48,26 @@ export default function Wizard() {
   const [xmemHealthy, setXmemHealthy] = useState<boolean | null>(null);
   const [setupState, setSetupState] = useState<SetupState>("idle");
   const [setupErrorMessage, setSetupErrorMessage] = useState<string | null>(null);
+
+  // Params-phase state, lifted out of ParamsStep/ScenarioStep so switching
+  // between "직접 입력" and "잘 모르겠어요" keeps whatever was already set —
+  // in-memory only (React state), not saved anywhere, gone on page reload.
+  const [view, setView] = useState<ParamsView>("manual");
+  const [dtype, setDtype] = useState<Dtype>(DTYPE_FIELD.default as Dtype);
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
+
+  // Deployment (region/budget) is environment context, not a model property —
+  // it survives picking a different model, unlike dtype/values/view above.
+  const [awsRegion, setAwsRegion] = useState(DEFAULT_AWS_REGION);
+  // Raw text, not a number: a controlled number input bound to a coerced
+  // number re-renders "0" back in on every keystroke, so clearing the field
+  // to type a fresh value produces "0500" instead of "500".
+  const [budgetAmountRaw, setBudgetAmountRaw] = useState("500");
+  const [budgetPeriod, setBudgetPeriod] = useState<BudgetPeriod>("monthly");
+
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   function checkHealth() {
     return fetch("/api/health", { cache: "no-store" })
@@ -135,8 +168,62 @@ export default function Wizard() {
     router.replace("?");
   }
 
+  function updateValue(key: string, value: unknown) {
+    setValues((v) => ({ ...v, [key]: value }));
+  }
+
+  function handleSelectScenario(preset: ScenarioPreset) {
+    if (!classified) return;
+    const applied = applyScenario(preset, classified.type, classified.config);
+    setDtype(applied.dtype);
+    setValues(applied.values);
+    setSelectedScenarioId(preset.id);
+  }
+
+  const budgetAmount = Number(budgetAmountRaw);
+  const budgetValid = Number.isFinite(budgetAmount) && budgetAmount > 0;
+  const deploymentInput = { aws_region: awsRegion, budget_amount: budgetAmount, budget_period: budgetPeriod };
+  const fieldErrors = classified ? collectFieldErrors(classified.type, values) : {};
+  const valuesValid = Object.keys(fieldErrors).length === 0;
+  const executionSupported = classified ? SUPPORTED_FOR_EXECUTION.includes(classified.type) : false;
+
+  async function handleSubmit() {
+    if (!classified) return;
+    if (!budgetValid || !valuesValid || !executionSupported || xmemHealthy === false) return;
+
+    setSubmitting(true);
+    setSubmitError(null);
+    const payload = buildPayload(classified.modelId, classified.rawConfig, classified.type, dtype, values, deploymentInput);
+
+    try {
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json()) as CreateJobResponse;
+
+      if (!res.ok) {
+        if (data.error_code === "unsupported_type") {
+          setSubmitError("이 유형은 아직 예측 실행을 지원하지 않습니다.");
+        } else {
+          // invalid_payload carries the server's own message; showing it beats
+          // a generic failure when the form and the server disagree.
+          setSubmitError(data.message ?? "예측 요청을 시작하지 못했습니다.");
+        }
+        return;
+      }
+
+      handleJobCreated(data.job_id);
+    } catch {
+      setSubmitError("오케스트레이터에 연결할 수 없습니다.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   if (jobId) {
-    return <JobFlow jobId={jobId} onReset={handleReset} />;
+    return <SloGate jobId={jobId} onReset={handleReset} />;
   }
 
   if (!classified) {
@@ -144,7 +231,45 @@ export default function Wizard() {
       <ModelSearchStep
         onClassified={(modelId, type, config, rawConfig) => {
           setClassified({ modelId, type, config, rawConfig });
+          // A new model can be a different workload type with a different
+          // field shape, so params-phase state resets here — but deployment
+          // (region/budget) is untouched, on purpose.
+          setDtype(DTYPE_FIELD.default as Dtype);
+          setValues(defaultValuesFor(type, config));
+          setSelectedScenarioId(null);
+          setView("manual");
+          setSubmitError(null);
         }}
+      />
+    );
+  }
+
+  const deploymentFieldProps = {
+    awsRegion,
+    onAwsRegionChange: setAwsRegion,
+    budgetAmountRaw,
+    onBudgetAmountRawChange: setBudgetAmountRaw,
+    budgetPeriod,
+    onBudgetPeriodChange: setBudgetPeriod,
+    budgetValid,
+  };
+
+  if (view === "scenario") {
+    return (
+      <ScenarioStep
+        modelId={classified.modelId}
+        type={classified.type}
+        selectedScenarioId={selectedScenarioId}
+        onSelectScenario={handleSelectScenario}
+        {...deploymentFieldProps}
+        xmemHealthy={xmemHealthy}
+        setupState={setupState}
+        setupErrorMessage={setupErrorMessage}
+        executionSupported={executionSupported}
+        submitting={submitting}
+        submitError={submitError}
+        onSubmit={handleSubmit}
+        onBack={() => setView("manual")}
       />
     );
   }
@@ -154,12 +279,22 @@ export default function Wizard() {
       modelId={classified.modelId}
       type={classified.type}
       config={classified.config}
-      rawConfig={classified.rawConfig}
+      dtype={dtype}
+      onDtypeChange={setDtype}
+      values={values}
+      onUpdateValue={updateValue}
+      fieldErrors={fieldErrors}
       onBack={() => setClassified(null)}
+      onShowScenarios={() => setView("scenario")}
+      {...deploymentFieldProps}
       xmemHealthy={xmemHealthy}
       setupState={setupState}
       setupErrorMessage={setupErrorMessage}
-      onJobCreated={handleJobCreated}
+      executionSupported={executionSupported}
+      valuesValid={valuesValid}
+      submitting={submitting}
+      submitError={submitError}
+      onSubmit={handleSubmit}
     />
   );
 }

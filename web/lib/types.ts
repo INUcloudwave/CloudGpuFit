@@ -172,12 +172,20 @@ export interface JobError {
   message: string;
 }
 
+/** The user's acceptance bar (PATCH /jobs/{id}/slo) — never a workload input,
+ * never a reason to recompute. null until submitted. */
+export interface SloInput {
+  max_latency_ms: number;
+  min_throughput_rps: number;
+}
+
 export interface JobResponse {
   job_id: string;
   status: JobStatus;
   cached: boolean;
   progress: string | null;
   payload: PredictPayload;
+  slo: SloInput | null;
   result: CombinedPredictionResult | null;
   error: JobError | null;
 }

@@ -85,6 +85,14 @@ class JobCreate(BaseModel):
         return self
 
 
+class SloIn(BaseModel):
+    """The user's acceptance bar, not a workload/arrival-rate input — it never
+    feeds VRAM/Runtime prediction and submitting it never starts a new job."""
+
+    max_latency_ms: float = Field(gt=0, allow_inf_nan=False)
+    min_throughput_rps: float = Field(gt=0, allow_inf_nan=False)
+
+
 def _validation_message(exc: RequestValidationError) -> str:
     errors = exc.errors()
     if not errors:
@@ -148,6 +156,10 @@ async def process_job(job_id: str) -> None:
     # A candidate list can legitimately come back empty (no catalog data yet,
     # nothing fits budget/region, ...) -- that is a normal result, not a
     # reason to mark the job failed (CLAUDE_HANDOFF §10, §17 test #7).
+    # Each set_progress() call here marks a real code transition, not a
+    # timer-driven guess -- there is no step between these two calls slow
+    # enough to deserve its own phase (filter_instances is in-memory).
+    db.set_progress(job_id, "AWS GPU 인스턴스 정보 조회 및 후보 필터링 중…")
     deployment = payload.get("deployment") or {}
     instance_catalog = load_instance_catalog()
     candidates = filter_instances(
@@ -158,6 +170,7 @@ async def process_job(job_id: str) -> None:
         installed_targets=available_targets(),
     )
 
+    db.set_progress(job_id, "후보 인스턴스별 성능 예측 중…")
     runtime_result = await asyncio.to_thread(
         predict_candidate_runtimes,
         payload,
@@ -209,6 +222,18 @@ async def get_job(job_id: str):
     if row is None:
         return JSONResponse(status_code=404, content={"error_code": "not_found"})
     return db.job_to_dict(row)
+
+
+@app.patch("/jobs/{job_id}/slo")
+async def set_job_slo(job_id: str, body: SloIn):
+    # Deliberately does not touch job_queue/cache_key/status: the SLO is
+    # evaluated against whatever this job already computes (or is
+    # computing), never a reason to compute anything again.
+    row = db.get_job(job_id)
+    if row is None:
+        return JSONResponse(status_code=404, content={"error_code": "not_found"})
+    db.set_slo(job_id, body.model_dump())
+    return db.job_to_dict(db.get_job(job_id))
 
 
 @app.get("/health")

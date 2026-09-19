@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { InstanceCandidate, JobResponse, PredictPayload, RuntimePrediction } from "@/lib/types";
+import type { InstanceCandidate, JobResponse, PredictPayload, RuntimePrediction, SloInput } from "@/lib/types";
 import { errorMessageFor, BREAKDOWN_LABELS } from "@/lib/jobErrors";
 import { formatBytesToGb } from "@/lib/format";
 import { WORKLOAD_SCHEMAS } from "@/lib/workloadSchema";
@@ -13,7 +13,7 @@ interface Props {
   onReset: () => void;
 }
 
-function ConditionsSummary({ payload }: { payload: PredictPayload }) {
+function ConditionsSummary({ payload, slo }: { payload: PredictPayload; slo: SloInput | null }) {
   const schema = WORKLOAD_SCHEMAS[payload.type];
   const paramEntries = schema.fields
     .filter((f) => f.key !== "batch_size")
@@ -47,6 +47,11 @@ function ConditionsSummary({ payload }: { payload: PredictPayload }) {
       <p className="mt-2 border-t border-neutral-100 pt-2 text-neutral-500 dark:border-neutral-800">
         리전: {payload.deployment.aws_region} · 예산: ${payload.deployment.budget_usd_per_hour.toFixed(4)}/시간
       </p>
+      {slo && (
+        <p className="mt-1 text-neutral-500">
+          SLO: p90 ≤ {slo.max_latency_ms}ms · 처리량 ≥ {slo.min_throughput_rps}req/s
+        </p>
+      )}
     </div>
   );
 }
@@ -186,7 +191,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
   if (job.status === "queued" || job.status === "running") {
     return (
       <div className="mx-auto w-full max-w-xl space-y-4">
-        <ConditionsSummary payload={job.payload} />
+        <ConditionsSummary payload={job.payload} slo={job.slo} />
         <div className="space-y-4 text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-white" />
           <p className="text-sm text-neutral-700 dark:text-neutral-300">
@@ -206,7 +211,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
     const error = job.error ?? { code: "internal" as const, message: "" };
     return (
       <div className="mx-auto w-full max-w-xl space-y-4">
-        <ConditionsSummary payload={job.payload} />
+        <ConditionsSummary payload={job.payload} slo={job.slo} />
         <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-400">
           {errorMessageFor(error)}
         </p>
@@ -233,7 +238,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
   const { vram, candidates, runtime } = result;
   return (
     <div className="mx-auto w-full max-w-xl space-y-6">
-      <ConditionsSummary payload={job.payload} />
+      <ConditionsSummary payload={job.payload} slo={job.slo} />
 
       {job.cached && (
         <span className="inline-block rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300">
