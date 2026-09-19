@@ -9,6 +9,7 @@ import {
   GENERATE_MODE_WARNING,
   WORKLOAD_SCHEMAS,
   buildPayload,
+  collectFieldErrors,
   defaultResolution,
   defaultValuesFor,
   isResolutionLocked,
@@ -22,6 +23,7 @@ interface Props {
   modelId: string;
   type: Exclude<WorkloadType, "unsupported">;
   config: ModelConfigFields;
+  rawConfig: Record<string, unknown>;
   onBack: () => void;
   xmemHealthy: boolean | null;
   setupState: SetupState;
@@ -35,6 +37,7 @@ export default function ParamsStep({
   modelId,
   type,
   config,
+  rawConfig,
   onBack,
   xmemHealthy,
   setupState,
@@ -60,13 +63,15 @@ export default function ParamsStep({
 
   const deploymentInput = { aws_region: awsRegion, budget_amount: budgetAmount, budget_period: budgetPeriod };
   const warnings = useMemo(
-    () => buildPayload(modelId, type, dtype, values, deploymentInput).warnings,
+    () => buildPayload(modelId, rawConfig, type, dtype, values, deploymentInput).warnings,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [modelId, type, dtype, values]
+    [modelId, rawConfig, type, dtype, values]
   );
 
   const perHourPreview = budgetPeriod === "monthly" ? budgetAmount / BUDGET_HOURS_PER_MONTH : budgetAmount;
-  const budgetValid = budgetAmount > 0;
+  const budgetValid = Number.isFinite(budgetAmount) && budgetAmount > 0;
+  const fieldErrors = collectFieldErrors(type, values);
+  const valuesValid = Object.keys(fieldErrors).length === 0;
   const executionSupported = type === SUPPORTED_FOR_EXECUTION;
 
   function updateValue(key: string, value: unknown) {
@@ -74,11 +79,11 @@ export default function ParamsStep({
   }
 
   async function handleSubmit() {
-    if (!budgetValid || !executionSupported || xmemHealthy === false) return;
+    if (!budgetValid || !valuesValid || !executionSupported || xmemHealthy === false) return;
 
     setSubmitting(true);
     setSubmitError(null);
-    const payload = buildPayload(modelId, type, dtype, values, deploymentInput);
+    const payload = buildPayload(modelId, rawConfig, type, dtype, values, deploymentInput);
 
     try {
       const res = await fetch("/api/jobs", {
@@ -89,11 +94,13 @@ export default function ParamsStep({
       const data = (await res.json()) as CreateJobResponse;
 
       if (!res.ok) {
-        setSubmitError(
-          data.error_code === "unsupported_type"
-            ? "현재 Decoder-only LLM 유형만 예측을 지원합니다."
-            : "예측 요청을 시작하지 못했습니다."
-        );
+        if (data.error_code === "unsupported_type") {
+          setSubmitError("현재 Decoder-only LLM 유형만 예측을 지원합니다.");
+        } else {
+          // invalid_payload carries the server's own message; showing it beats
+          // a generic failure when the form and the server disagree.
+          setSubmitError(data.message ?? "예측 요청을 시작하지 못했습니다.");
+        }
         return;
       }
 
@@ -152,7 +159,8 @@ export default function ParamsStep({
       );
     }
 
-    const fieldWarning = warningForField(field, values);
+    const fieldError = fieldErrors[field.key];
+    const fieldWarning = fieldError ? null : warningForField(field, values);
     return (
       <div key={field.key} className="space-y-1">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">{field.label}</label>
@@ -161,9 +169,15 @@ export default function ParamsStep({
           min={field.hardMin}
           value={values[field.key] as string | number}
           onChange={(e) => updateValue(field.key, e.target.value)}
-          className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:ring-neutral-700"
+          aria-invalid={fieldError ? true : undefined}
+          className={`w-full rounded-lg border bg-white px-3 py-2 text-sm outline-none focus:ring-2 dark:bg-neutral-900 ${
+            fieldError
+              ? "border-red-500 focus:border-red-500 focus:ring-red-200 dark:focus:ring-red-900"
+              : "border-neutral-300 focus:border-neutral-500 focus:ring-neutral-200 dark:border-neutral-700 dark:focus:ring-neutral-700"
+          }`}
         />
         {field.helperText && <p className="text-xs text-neutral-500">{field.helperText}</p>}
+        {fieldError && <p className="text-xs text-red-600">{fieldError}</p>}
         {fieldWarning && <p className="text-xs text-amber-600 dark:text-amber-400">{fieldWarning}</p>}
       </div>
     );
@@ -307,7 +321,7 @@ export default function ParamsStep({
       <div className="flex justify-end">
         <button
           type="button"
-          disabled={submitting || !budgetValid || !executionSupported || xmemHealthy === false}
+          disabled={submitting || !budgetValid || !valuesValid || !executionSupported || xmemHealthy === false}
           onClick={handleSubmit}
           className="rounded-lg bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-neutral-900"
         >

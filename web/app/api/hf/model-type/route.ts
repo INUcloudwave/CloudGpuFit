@@ -5,16 +5,34 @@ export const runtime = "nodejs";
 
 type HfConfigJson = Record<string, unknown>;
 
-function classify(cfg: HfConfigJson): WorkloadType {
-  const architectures = Array.isArray(cfg.architectures) ? (cfg.architectures as string[]) : [];
-  const isEncoderDecoder = cfg.is_encoder_decoder === true;
-  const hasMelBins = cfg.num_mel_bins !== undefined && cfg.num_mel_bins !== null;
+// The Hub's own task classification (a fixed vocabulary — set by the uploader in the
+// model card, or auto-inferred by the Hub from the architecture if they didn't). This
+// is the SAME signal xMem's own suggest_automodel_class() uses to pick an AutoModel
+// class, so classifying against it here instead of guessing from config.json fields
+// keeps the web gate consistent with what the execution engine actually does.
+// Everything else (audio, fill-mask, sentence-similarity, ...) is just
+// "unsupported" — no separate audio_encdec bucket or special-cased message.
+// README lists exactly these tags as supported; anything not here is out of
+// scope for the same reason, not because audio specifically is worse off.
+const PIPELINE_TAG_TYPE: Record<string, Exclude<WorkloadType, "unsupported">> = {
+  "text-generation": "decoder_llm",
+  "image-classification": "vision_cls",
+  "text2text-generation": "text_encdec",
+  translation: "text_encdec",
+  summarization: "text_encdec",
+};
 
-  if (isEncoderDecoder && hasMelBins) return "audio_encdec";
-  if (isEncoderDecoder) return "text_encdec";
-  if (architectures.some((a) => a.endsWith("ForImageClassification"))) return "vision_cls";
-  if (architectures.some((a) => a.endsWith("ForCausalLM"))) return "decoder_llm";
-  return "unsupported";
+function classify(pipelineTag: string | null): WorkloadType {
+  if (!pipelineTag) return "unsupported";
+  return PIPELINE_TAG_TYPE[pipelineTag] ?? "unsupported";
+}
+
+function rejectionReason(type: WorkloadType, pipelineTag: string | null): string | undefined {
+  if (type !== "unsupported") return undefined;
+  if (!pipelineTag) {
+    return "이 모델은 Hugging Face pipeline_tag 정보가 없어 유형을 판단할 수 없습니다.";
+  }
+  return `pipeline_tag "${pipelineTag}"는 지원하는 유형(decoder_llm / vision_cls / text_encdec)에 해당하지 않습니다.`;
 }
 
 function pickConfig(cfg: HfConfigJson): ModelConfigFields {
@@ -45,6 +63,36 @@ export async function GET(req: NextRequest) {
     headers.Authorization = `Bearer ${process.env.HF_TOKEN}`;
   }
 
+  // pipeline_tag comes from the Hub's model-info API, not config.json.
+  let infoRes: Response;
+  try {
+    infoRes = await fetch(`https://huggingface.co/api/models/${id}`, { headers });
+  } catch {
+    return NextResponse.json({ error: "network_error" }, { status: 502 });
+  }
+
+  if (infoRes.status === 401 || infoRes.status === 403) {
+    return NextResponse.json({ error: "gated" }, { status: infoRes.status });
+  }
+  if (infoRes.status === 404) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
+  if (!infoRes.ok) {
+    return NextResponse.json({ error: "hf_error" }, { status: infoRes.status });
+  }
+
+  let info: { pipeline_tag?: unknown };
+  try {
+    info = (await infoRes.json()) as { pipeline_tag?: unknown };
+  } catch {
+    return NextResponse.json({ error: "invalid_config" }, { status: 502 });
+  }
+  const pipelineTag = typeof info.pipeline_tag === "string" ? info.pipeline_tag : null;
+
+  // config.json is still needed for two things that have nothing to do with
+  // classification: a few UI-only defaults (isResolutionLocked/defaultResolution)
+  // and the full raw object, kept as-is so a later step can hand it straight to
+  // xMem/eager_runtime instead of them fetching it again themselves.
   let res: Response;
   try {
     res = await fetch(`https://huggingface.co/${id}/resolve/main/config.json`, { headers });
@@ -69,10 +117,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "invalid_config" }, { status: 502 });
   }
 
+  const type = classify(pipelineTag);
+
   const body: ModelTypeResponse = {
-    type: classify(cfg),
+    type,
     modelId: id,
+    pipeline_tag: pipelineTag,
+    reason: rejectionReason(type, pipelineTag),
     config: pickConfig(cfg),
+    raw_config: cfg,
   };
   return NextResponse.json(body);
 }

@@ -19,11 +19,12 @@ import logging
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 import db
 import setup_manager
@@ -32,6 +33,7 @@ from eager_runtime import available_targets
 from instance_catalog import catalog_version, load_instance_catalog
 from instance_filter import filter_instances
 from runtime_adapter import predict_candidate_runtimes
+from workload_params import validate_params
 from xmem_runner import build_xmem_args, run_xmem
 
 logging.basicConfig(level=logging.INFO)
@@ -54,18 +56,57 @@ EAGER_RUNTIME_ROOT = Path(__file__).parent / "eager_runtime"
 
 
 class DeploymentIn(BaseModel):
-    aws_region: str
-    budget_usd_per_hour: float
+    aws_region: str = Field(min_length=1)
+    # allow_inf_nan=False because Python's json.loads accepts bare NaN/Infinity
+    # tokens, so a non-browser client can otherwise put one straight into the
+    # budget filter's comparisons.
+    budget_usd_per_hour: float = Field(gt=0, allow_inf_nan=False)
 
 
 class JobCreate(BaseModel):
-    model: str
+    model: str = Field(min_length=1)
+    # Full config.json the web app already fetched when the user picked this
+    # model. Named *_snapshot, not model_config -- "model_config" is a
+    # reserved Pydantic v2 attribute (model configuration, not a field) and
+    # using it here raises PydanticUserError.
+    model_config_snapshot: dict[str, Any]
+    # Left as a plain str, not a Literal: create_job's SUPPORTED_TYPES check
+    # already rejects unrunnable types with an error code the UI handles, and
+    # a Literal here would turn that into a generic validation failure instead.
     type: str
-    dtype: str
-    batch_size: int
+    # predict_vram.py's argparse has choices=[...] for --dtype, but the --json
+    # path setattr()s straight past it, so an unknown dtype would only surface
+    # as a KeyError deep inside DTYPE_SCALE.
+    dtype: Literal["fp32", "fp16", "bf16"]
+    batch_size: int = Field(gt=0)
     params: dict[str, Any]
     deployment: DeploymentIn
     warnings: list[str] = []
+
+    @model_validator(mode="after")
+    def _check_params(self) -> "JobCreate":
+        validate_params(self.type, self.params)
+        return self
+
+
+def _validation_message(exc: RequestValidationError) -> str:
+    errors = exc.errors()
+    if not errors:
+        return "입력값이 올바르지 않습니다."
+    first = errors[0]
+    location = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
+    message = str(first.get("msg", "")).removeprefix("Value error, ")
+    return f"{location}: {message}" if location else message
+
+
+@app.exception_handler(RequestValidationError)
+async def on_invalid_payload(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI's stock 422 body is a nested pydantic error list the UI can't
+    # render; every other endpoint here answers with {"error_code": ...}.
+    return JSONResponse(
+        status_code=400,
+        content={"error_code": "invalid_payload", "message": _validation_message(exc)},
+    )
 
 
 @app.on_event("startup")

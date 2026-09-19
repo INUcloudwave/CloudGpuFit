@@ -34,6 +34,7 @@ XMEM_KEYS = {
     "mode",
     "max_new_tokens",
     "gpu_memory_gb",
+    "model_config",
 }
 
 # Not a user-configurable value: this is xMem's internal "candidate GPU memory"
@@ -58,6 +59,11 @@ def build_xmem_args(payload: dict[str, Any]) -> dict[str, Any]:
         "batch_size": payload["batch_size"],
         **params,
         "dtype": payload["dtype"],
+        # Same reasoning as dtype above: applied after **params so it can't be
+        # shadowed, and its presence lets predict_vram.py skip its own
+        # AutoConfig.from_pretrained() fetch and reuse what the web app
+        # already fetched when the user picked this model.
+        "model_config": payload.get("model_config_snapshot"),
     }
     args = {k: v for k, v in merged.items() if k in XMEM_KEYS and v is not None}
     args["gpu_memory_gb"] = FIXED_GPU_MEMORY_GB

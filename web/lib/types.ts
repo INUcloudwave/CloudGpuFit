@@ -32,7 +32,15 @@ export interface ModelConfigFields {
 export interface ModelTypeResponse {
   type: WorkloadType;
   modelId: string;
+  /** The Hub's own task classification (same source xMem's suggest_automodel_class()
+   * uses) — the primary classification signal. null means the Hub has none on file. */
+  pipeline_tag: string | null;
+  /** Present only when type is "unsupported" or "audio_encdec" — why it was rejected. */
+  reason?: string;
   config: ModelConfigFields;
+  /** The full config.json as fetched, kept so a later step can hand it to
+   * xMem/eager_runtime instead of them re-fetching it themselves. Unused for now. */
+  raw_config: Record<string, unknown>;
 }
 
 /** Shape returned by GET /api/hf/model-type on failure. */
@@ -59,6 +67,9 @@ export interface DeploymentNormalized {
 
 export interface PredictPayload {
   model: string;
+  /** Full config.json as fetched when the model was picked — carried through
+   * so xMem/eager_runtime can reuse it instead of fetching it again themselves. */
+  model_config_snapshot: Record<string, unknown>;
   type: Exclude<WorkloadType, "unsupported">;
   dtype: Dtype;
   batch_size: number;
@@ -176,4 +187,6 @@ export interface CreateJobResponse {
   status: JobStatus;
   cached: boolean;
   error_code?: string;
+  /** Only on error_code="invalid_payload" — which field failed and why. */
+  message?: string;
 }

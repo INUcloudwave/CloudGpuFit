@@ -1,13 +1,31 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { HfSearchResult, ModelConfigFields, ModelTypeErrorResponse, ModelTypeResponse, WorkloadType } from "@/lib/types";
+import type {
+  HfSearchResult,
+  ModelConfigFields,
+  ModelTypeErrorResponse,
+  ModelTypeResponse,
+  WorkloadType,
+} from "@/lib/types";
 import { formatCompactNumber } from "@/lib/format";
 
 const DEBOUNCE_MS = 300;
 
+/** The only types with an actual input form + xMem/eager_runtime adapter today. */
+type SupportedWorkloadType = "decoder_llm" | "vision_cls" | "text_encdec";
+
+function isSupported(type: WorkloadType): type is SupportedWorkloadType {
+  return type === "decoder_llm" || type === "vision_cls" || type === "text_encdec";
+}
+
 interface Props {
-  onClassified: (modelId: string, type: WorkloadType, config: ModelConfigFields) => void;
+  onClassified: (
+    modelId: string,
+    type: SupportedWorkloadType,
+    config: ModelConfigFields,
+    rawConfig: Record<string, unknown>
+  ) => void;
 }
 
 function classifyErrorMessage(status: number, body: ModelTypeErrorResponse | null): string {
@@ -117,14 +135,15 @@ export default function ModelSearchStep({ onClassified }: Props) {
       }
 
       const body = data as ModelTypeResponse;
-      if (body.type === "unsupported") {
+      if (!isSupported(body.type)) {
         setClassifyError(
-          "현재 지원하는 4개 유형(Decoder-only LLM / Vision classification / Text Enc-Dec / Audio Enc-Dec)에 해당하지 않습니다."
+          body.reason ??
+            "현재 지원하는 3개 유형(Decoder-only LLM / Vision classification / Text Encoder-Decoder)에 해당하지 않습니다."
         );
         return;
       }
 
-      onClassified(body.modelId, body.type, body.config);
+      onClassified(body.modelId, body.type, body.config, body.raw_config);
     } catch {
       setClassifyError("모델 유형을 확인하는 중 오류가 발생했습니다. 다시 시도해주세요.");
     } finally {

@@ -82,17 +82,32 @@ def build_loader(kind, batch_size, *, seq_len=None, resolution=None, vocab_size=
 
 
 # ───────────────────────────────────────── 모델 로딩
-def load_model(model_name):
-    """(model, kind, hf_config) 반환. kind는 'llm' 또는 'vision'."""
+def load_model(model_name, model_config=None):
+    """(model, kind, hf_config) 반환. kind는 'llm' 또는 'vision'.
+
+    model_config(호출측이 이미 HF에서 받아둔 config.json 원본 dict)가 있으면
+    그걸로 config를 복원해서 이 함수가 또 HF에 config.json을 직접 fetch하지
+    않게 한다. 없으면(CLI 단독 실행 등) 예전처럼 자체적으로 받아온다.
+    """
     from perf_estimator.models import AllModels
 
     if getattr(AllModels, model_name, None) is not None:
         return getattr(AllModels, model_name).value, "vision", None
 
-    from transformers import AutoConfig
     from utils.huggingface import suggest_automodel_class
 
-    cfg = AutoConfig.from_pretrained(model_name)
+    if model_config is not None:
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+        model_type = model_config.get("model_type")
+        if not model_type:
+            raise ValueError("model_config.model_type is required")
+        cfg = CONFIG_MAPPING[model_type].from_dict(dict(model_config))
+    else:
+        from transformers import AutoConfig
+
+        cfg = AutoConfig.from_pretrained(model_name)
+
     cfg.torch_dtype = torch.float32
     model_class = suggest_automodel_class(model_name)
     model = model_class.from_config(cfg)
@@ -201,7 +216,7 @@ def run(args):
     warnings.filterwarnings("ignore")
     torch.manual_seed(0)
 
-    model, kind, hf_cfg = load_model(args.model)
+    model, kind, hf_cfg = load_model(args.model, getattr(args, "model_config", None))
     pb = param_bytes(model)
 
     if kind == "llm":

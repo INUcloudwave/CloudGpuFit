@@ -9,8 +9,11 @@ import JobFlow from "./JobFlow";
 
 interface ClassifiedModel {
   modelId: string;
-  type: Exclude<WorkloadType, "unsupported">;
+  type: Exclude<WorkloadType, "unsupported" | "audio_encdec">;
   config: ModelConfigFields;
+  /** Unused for now — carried through so a later step can send it on to
+   * xMem/eager_runtime instead of them re-fetching config.json themselves. */
+  rawConfig: Record<string, unknown>;
 }
 
 type SetupState = "idle" | "provisioning" | "ready" | "error";
@@ -139,9 +142,8 @@ export default function Wizard() {
   if (!classified) {
     return (
       <ModelSearchStep
-        onClassified={(modelId, type, config) => {
-          if (type === "unsupported") return;
-          setClassified({ modelId, type, config });
+        onClassified={(modelId, type, config, rawConfig) => {
+          setClassified({ modelId, type, config, rawConfig });
         }}
       />
     );
@@ -152,6 +154,7 @@ export default function Wizard() {
       modelId={classified.modelId}
       type={classified.type}
       config={classified.config}
+      rawConfig={classified.rawConfig}
       onBack={() => setClassified(null)}
       xmemHealthy={xmemHealthy}
       setupState={setupState}

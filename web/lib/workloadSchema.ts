@@ -159,6 +159,40 @@ export function warningForField(field: FieldSpec, values: Record<string, unknown
   return null;
 }
 
+/**
+ * Mirrors orchestrator/workload_params.py. A warning (warningForField) means
+ * "outside the range we validated against real GPUs, but still runnable"; an
+ * error here means the request would be rejected, so submission is blocked.
+ * The server re-checks all of this — this exists so the user sees the problem
+ * next to the field instead of as a failed request.
+ */
+export function errorForField(field: FieldSpec, values: Record<string, unknown>): string | null {
+  if (field.kind !== "number") return null;
+  if (field.showWhen && !field.showWhen(values)) return null;
+
+  const raw = values[field.key];
+  if (raw === "" || raw === null || raw === undefined) return "값을 입력하세요.";
+
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return "숫자를 입력하세요.";
+  if (!Number.isInteger(num)) return "정수를 입력하세요.";
+  if (num <= 0) return "0보다 커야 합니다.";
+  if (field.hardMin !== undefined && num < field.hardMin) return `${field.hardMin} 이상이어야 합니다.`;
+  return null;
+}
+
+export function collectFieldErrors(
+  type: Exclude<WorkloadType, "unsupported">,
+  values: Record<string, unknown>
+): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const field of WORKLOAD_SCHEMAS[type].fields) {
+    const error = errorForField(field, values);
+    if (error) errors[field.key] = error;
+  }
+  return errors;
+}
+
 export const GENERATE_MODE_WARNING =
   "generate 모드의 KV cache 추정은 아직 GPU 실측 대비 검증되지 않았습니다. 과대추정 경향이 있습니다.";
 
@@ -192,6 +226,7 @@ export function normalizeDeployment(input: DeploymentInput): DeploymentNormalize
 
 export function buildPayload(
   modelId: string,
+  modelConfigSnapshot: Record<string, unknown>,
   type: Exclude<WorkloadType, "unsupported">,
   dtype: Dtype,
   values: Record<string, unknown>,
@@ -212,6 +247,7 @@ export function buildPayload(
 
   return {
     model: modelId,
+    model_config_snapshot: modelConfigSnapshot,
     type,
     dtype,
     batch_size: Number(values.batch_size),

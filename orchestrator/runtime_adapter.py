@@ -78,15 +78,18 @@ def _validate_payload(payload: Mapping[str, Any]) -> None:
 
 
 def _runtime_request(payload: Mapping[str, Any]) -> dict[str, Any]:
-    # eager_runtime only reads model/type/dtype/batch_size/params. deployment
-    # and warnings are dropped here explicitly rather than relying on
-    # eager_runtime to ignore unknown keys.
+    # eager_runtime only reads model/type/dtype/batch_size/params/model_config.
+    # deployment and warnings are dropped here explicitly rather than relying
+    # on eager_runtime to ignore unknown keys.
     return {
         "model": payload["model"],
         "type": payload.get("type"),
         "dtype": payload["dtype"],
         "batch_size": payload["batch_size"],
         "params": payload.get("params") or {},
+        # load_config() reads this key name and skips its own
+        # AutoConfig.from_pretrained() fetch when it's present.
+        "model_config": payload.get("model_config_snapshot"),
     }
 
 

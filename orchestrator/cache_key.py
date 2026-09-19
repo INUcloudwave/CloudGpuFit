@@ -69,6 +69,10 @@ def pipeline_cache_key_for(
         # folded in separately rather than invisibly reusing the old key.
         "type": payload.get("type"),
         "deployment": payload.get("deployment"),
+        # xmem_args already includes this too (build_xmem_args copies it in),
+        # but folded in again explicitly so a config change is never missed
+        # even if that copy step changes later.
+        "model_config_snapshot": payload.get("model_config_snapshot"),
     }
     return hashlib.sha256(
         json.dumps(material, sort_keys=True, default=str).encode("utf-8")
