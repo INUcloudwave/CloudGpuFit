@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { BudgetPeriod, CreateJobResponse, Dtype, ModelConfigFields, WorkloadType } from "@/lib/types";
 import { AWS_REGIONS, DEFAULT_AWS_REGION } from "@/lib/awsRegions";
 import {
@@ -13,7 +13,6 @@ import {
   defaultResolution,
   defaultValuesFor,
   isResolutionLocked,
-  warningForField,
   type FieldSpec,
 } from "@/lib/workloadSchema";
 
@@ -31,7 +30,9 @@ interface Props {
   onJobCreated: (jobId: string) => void;
 }
 
-const SUPPORTED_FOR_EXECUTION: WorkloadType = "decoder_llm";
+// Mirrors orchestrator/main.py SUPPORTED_TYPES — the types every stage of
+// the pipeline can actually run, not just the ones with an input form.
+const SUPPORTED_FOR_EXECUTION: WorkloadType[] = ["decoder_llm", "vision_cls"];
 
 export default function ParamsStep({
   modelId,
@@ -62,17 +63,11 @@ export default function ParamsStep({
   const resolutionLocked = type === "vision_cls" && isResolutionLocked(config);
 
   const deploymentInput = { aws_region: awsRegion, budget_amount: budgetAmount, budget_period: budgetPeriod };
-  const warnings = useMemo(
-    () => buildPayload(modelId, rawConfig, type, dtype, values, deploymentInput).warnings,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [modelId, rawConfig, type, dtype, values]
-  );
-
   const perHourPreview = budgetPeriod === "monthly" ? budgetAmount / BUDGET_HOURS_PER_MONTH : budgetAmount;
   const budgetValid = Number.isFinite(budgetAmount) && budgetAmount > 0;
   const fieldErrors = collectFieldErrors(type, values);
   const valuesValid = Object.keys(fieldErrors).length === 0;
-  const executionSupported = type === SUPPORTED_FOR_EXECUTION;
+  const executionSupported = SUPPORTED_FOR_EXECUTION.includes(type);
 
   function updateValue(key: string, value: unknown) {
     setValues((v) => ({ ...v, [key]: value }));
@@ -95,7 +90,7 @@ export default function ParamsStep({
 
       if (!res.ok) {
         if (data.error_code === "unsupported_type") {
-          setSubmitError("현재 Decoder-only LLM 유형만 예측을 지원합니다.");
+          setSubmitError("이 유형은 아직 예측 실행을 지원하지 않습니다.");
         } else {
           // invalid_payload carries the server's own message; showing it beats
           // a generic failure when the form and the server disagree.
@@ -160,7 +155,6 @@ export default function ParamsStep({
     }
 
     const fieldError = fieldErrors[field.key];
-    const fieldWarning = fieldError ? null : warningForField(field, values);
     return (
       <div key={field.key} className="space-y-1">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">{field.label}</label>
@@ -178,7 +172,6 @@ export default function ParamsStep({
         />
         {field.helperText && <p className="text-xs text-neutral-500">{field.helperText}</p>}
         {fieldError && <p className="text-xs text-red-600">{fieldError}</p>}
-        {fieldWarning && <p className="text-xs text-amber-600 dark:text-amber-400">{fieldWarning}</p>}
       </div>
     );
   }
@@ -221,7 +214,7 @@ export default function ParamsStep({
 
       {!executionSupported && (
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-          현재 Decoder-only LLM 유형만 예측 실행을 지원합니다. 입력값 구성은 가능하지만 실행은 준비 중입니다.
+          이 유형은 아직 예측 실행을 지원하지 않습니다. 입력값 구성은 가능하지만 실행은 준비 중입니다.
         </p>
       )}
 
@@ -329,7 +322,6 @@ export default function ParamsStep({
         </button>
       </div>
 
-      {warnings.length === 0 && <p className="text-xs text-neutral-400">현재 입력값은 검증 범위 안에 있습니다.</p>}
     </div>
   );
 }

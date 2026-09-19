@@ -35,6 +35,7 @@ XMEM_KEYS = {
     "max_new_tokens",
     "gpu_memory_gb",
     "model_config",
+    "workload_type",
 }
 
 # Not a user-configurable value: this is xMem's internal "candidate GPU memory"
@@ -64,6 +65,10 @@ def build_xmem_args(payload: dict[str, Any]) -> dict[str, Any]:
         # AutoConfig.from_pretrained() fetch and reuse what the web app
         # already fetched when the user picked this model.
         "model_config": payload.get("model_config_snapshot"),
+        # Decides the AutoModel class, the synthetic input shape and which
+        # xMem inference loop runs. Without it predict_vram.py treats every
+        # HF model as text and asks the Hub for a pipeline_tag to guess with.
+        "workload_type": payload.get("type"),
     }
     args = {k: v for k, v in merged.items() if k in XMEM_KEYS and v is not None}
     args["gpu_memory_gb"] = FIXED_GPU_MEMORY_GB
@@ -117,12 +122,16 @@ def run_xmem(xmem_args: dict[str, Any], on_progress: Optional[Callable[[str], No
     report(PHASE_PREPARING)
 
     try:
+        # The args go in over stdin, not as an argv string: model_config alone is
+        # ~60 KB for a vision model (id2label/label2id carry 1000 ImageNet class
+        # names), which blows past Windows' 32 KB command-line limit.
         proc = subprocess.Popen(
             [
                 "docker", "exec", "-i", "-w", WORKDIR, CONTAINER_NAME,
                 "python", SCRIPT_PATH,
-                "--json", json.dumps(xmem_args),
+                "--json", "-",
             ],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -132,6 +141,11 @@ def run_xmem(xmem_args: dict[str, Any], on_progress: Optional[Callable[[str], No
         )
     except FileNotFoundError as exc:
         return RunOutcome(status="failed", error_code="internal", error_message=f"'docker'를 찾을 수 없습니다: {exc}")
+
+    # Closed immediately: predict_vram.py reads stdin to EOF before it does
+    # anything else, so leaving it open would hang the run.
+    proc.stdin.write(json.dumps(xmem_args))
+    proc.stdin.close()
 
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []

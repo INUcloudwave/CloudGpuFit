@@ -34,14 +34,6 @@ UNDERESTIMATE_CONSTANT = 32 * 1024 ** 2
 # reserved-allocated gap + CUDA context + 여유를 흡수하는 고정 마진.
 MARGIN_BYTES = 2 * 1024 ** 3
 
-# 검증 범위 (이 밖은 warning)
-VALIDATED = {
-    "llm_batch": (1, 30),
-    "llm_seq": (128, 2048),
-    "vision_batch": (32, 64),
-    "vision_res": (86, 86),
-}
-
 PROFILE_ITERATIONS = 2      # xMem train_on_cpu 기본값과 동일
 SAMPLES_PER_LOADER = 4      # iterations=2 → 최소 3배치 필요
 
@@ -62,39 +54,62 @@ class _LLMDataset(torch.utils.data.Dataset):
 
 
 class _VisionDataset(torch.utils.data.Dataset):
-    def __init__(self, n, res):
-        self.n, self.res = n, res
+    """(tensor, label) 튜플을 낸다 — conv_infer_loop이 `model(inputs)`처럼
+    위치 인자 하나로 부르는 형태. HF 이미지 분류 모델도 forward의 첫 인자가
+    pixel_values라 같은 호출이 그대로 맞는다."""
+
+    def __init__(self, n, res, channels=3):
+        self.n, self.res, self.channels = n, res, channels
 
     def __len__(self):
         return self.n
 
     def __getitem__(self, idx):
         g = torch.Generator().manual_seed(idx)
-        x = torch.randn(3, self.res, self.res, generator=g)
+        x = torch.randn(self.channels, self.res, self.res, generator=g)
         return x, torch.tensor(0)
 
 
-def build_loader(kind, batch_size, *, seq_len=None, resolution=None, vocab_size=None):
+def build_loader(kind, batch_size, *, seq_len=None, resolution=None, vocab_size=None,
+                 channels=3):
     n = batch_size * SAMPLES_PER_LOADER
     ds = (_LLMDataset(n, seq_len, vocab_size) if kind == "llm"
-          else _VisionDataset(n, resolution))
+          else _VisionDataset(n, resolution, channels))
     return torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
 
 
 # ───────────────────────────────────────── 모델 로딩
-def load_model(model_name, model_config=None):
+# workload_type -> (AutoModel 클래스 이름, kind). kind는 아래 전부를 좌우한다:
+# 어떤 합성 로더를 쓸지, ModelTrainer에 is_transformer로 뭘 넘길지(=패치가 고른
+# 추론 루프), 그리고 estimate()가 huggingface_enable을 켤지.
+#   llm    -> 텍스트 로더 + transformer_infer_loop(dict 입력, use_cache=False)
+#   vision -> 이미지 로더 + conv_infer_loop(위치 인자 하나)
+WORKLOAD_MODEL_CLASS = {
+    "decoder_llm": ("AutoModelForCausalLM", "llm"),
+    "text_encdec": ("AutoModelForSeq2SeqLM", "llm"),
+    "vision_cls": ("AutoModelForImageClassification", "vision"),
+}
+
+
+def load_model(model_name, model_config=None, workload_type=None):
     """(model, kind, hf_config) 반환. kind는 'llm' 또는 'vision'.
 
     model_config(호출측이 이미 HF에서 받아둔 config.json 원본 dict)가 있으면
     그걸로 config를 복원해서 이 함수가 또 HF에 config.json을 직접 fetch하지
     않게 한다. 없으면(CLI 단독 실행 등) 예전처럼 자체적으로 받아온다.
+
+    workload_type이 주어지면 AutoModel 클래스도 그걸로 정한다. 그러면 xMem의
+    suggest_automodel_class()를 부르지 않게 되는데, 그 함수는 클래스를 고르려고
+    huggingface_hub.model_info()로 pipeline_tag를 또 네트워크에서 받아온다.
+    웹은 이미 pipeline_tag로 유형을 정해서 보내주므로 다시 물어볼 이유가 없다.
     """
-    from perf_estimator.models import AllModels
+    import transformers
 
-    if getattr(AllModels, model_name, None) is not None:
-        return getattr(AllModels, model_name).value, "vision", None
-
-    from utils.huggingface import suggest_automodel_class
+    if workload_type is None and getattr_all_models(model_name) is not None:
+        # 이름만 보고 torchvision 별칭으로 바꿔치기하는 건 CLI 단독 사용일 때뿐.
+        # 호출측이 workload_type을 지정했다면 그건 HF 모델을 뜻하므로 건드리지
+        # 않는다 (HF ID에는 "/"가 들어가 별칭과 겹치지도 않는다).
+        return getattr_all_models(model_name).value, "vision", None
 
     if model_config is not None:
         from transformers.models.auto.configuration_auto import CONFIG_MAPPING
@@ -104,15 +119,33 @@ def load_model(model_name, model_config=None):
             raise ValueError("model_config.model_type is required")
         cfg = CONFIG_MAPPING[model_type].from_dict(dict(model_config))
     else:
-        from transformers import AutoConfig
-
-        cfg = AutoConfig.from_pretrained(model_name)
+        cfg = transformers.AutoConfig.from_pretrained(model_name)
 
     cfg.torch_dtype = torch.float32
-    model_class = suggest_automodel_class(model_name)
+
+    if workload_type is not None:
+        if workload_type not in WORKLOAD_MODEL_CLASS:
+            raise ValueError(
+                f"지원하지 않는 workload_type입니다: {workload_type!r} "
+                f"(가능: {sorted(WORKLOAD_MODEL_CLASS)})"
+            )
+        class_name, kind = WORKLOAD_MODEL_CLASS[workload_type]
+        model_class = getattr(transformers, class_name)
+    else:
+        from utils.huggingface import suggest_automodel_class
+
+        model_class = suggest_automodel_class(model_name)
+        kind = "llm"
+
     model = model_class.from_config(cfg)
     model.train()          # xMem ModelPreparer와 동일 (추론 루프가 eval로 전환)
-    return model, "llm", cfg
+    return model, kind, cfg
+
+
+def getattr_all_models(model_name):
+    from perf_estimator.models import AllModels
+
+    return getattr(AllModels, model_name, None)
 
 
 def param_bytes(model):
@@ -184,29 +217,12 @@ def kv_cache_bytes(cfg, batch_size, total_len, dtype):
     return 2 * layers * kv_heads * head_dim * total_len * batch_size * DTYPE_BYTES[dtype]
 
 
-# ───────────────────────────────────────── 입력 검증
-def collect_warnings(kind, batch_size, seq_len, resolution, mode):
+# ───────────────────────────────────────── 경고
+def collect_warnings(kind, mode):
     w = []
-    if kind == "llm":
-        lo, hi = VALIDATED["llm_batch"]
-        if not lo <= batch_size <= hi:
-            w.append(f"batch_size {batch_size} is outside the validated range {lo}-{hi}")
-        lo, hi = VALIDATED["llm_seq"]
-        if not lo <= seq_len <= hi:
-            w.append(f"seq_len {seq_len} is outside the validated range {lo}-{hi}; "
-                     "long sequences may switch GPU attention kernels (FlashAttention), "
-                     "which the CPU trace cannot reproduce")
-    else:
-        lo, hi = VALIDATED["vision_batch"]
-        if not lo <= batch_size <= hi:
-            w.append(f"batch_size {batch_size} is outside the validated range {lo}-{hi}")
-        if resolution != VALIDATED["vision_res"][0]:
-            w.append(f"resolution {resolution} is outside the validated value "
-                     f"{VALIDATED['vision_res'][0]}; activation memory scales "
-                     "quadratically with resolution")
     if mode == "generate":
-        w.append("mode=generate is EXPERIMENTAL: KV cache is estimated analytically "
-                 "and has not been validated against GPU measurements")
+        w.append("mode=generate is EXPERIMENTAL: the KV cache is estimated "
+                 "analytically rather than traced, and tends to overestimate")
     return w
 
 
@@ -216,17 +232,38 @@ def run(args):
     warnings.filterwarnings("ignore")
     torch.manual_seed(0)
 
-    model, kind, hf_cfg = load_model(args.model, getattr(args, "model_config", None))
+    model, kind, hf_cfg = load_model(
+        args.model,
+        getattr(args, "model_config", None),
+        getattr(args, "workload_type", None),
+    )
     pb = param_bytes(model)
 
+    resolution = args.resolution
     if kind == "llm":
         loader = build_loader("llm", args.batch_size, seq_len=args.seq_len,
                               vocab_size=getattr(hf_cfg, "vocab_size", 30000))
     else:
-        loader = build_loader("vision", args.batch_size, resolution=args.resolution)
+        # 해상도/채널은 모델 config가 있으면 거기서 가져온다. ViT 계열은
+        # position embedding이 학습 해상도에 묶여 있어서 다른 값을 주면 실제로
+        # 실패하고, ConvNeXt/EfficientNet처럼 image_size를 선언해도 다른 해상도로
+        # 도는 계열이 있어서 여기서 막지는 않고 경고만 남긴다.
+        declared_res = getattr(hf_cfg, "image_size", None) if hf_cfg is not None else None
+        channels = getattr(hf_cfg, "num_channels", None) if hf_cfg is not None else None
+        if resolution is None:
+            resolution = declared_res or 224
+        loader = build_loader("vision", args.batch_size, resolution=resolution,
+                              channels=channels or 3)
 
-    warns = collect_warnings(kind, args.batch_size, args.seq_len,
-                             args.resolution, args.mode)
+    warns = collect_warnings(kind, args.mode)
+    if kind == "vision" and hf_cfg is not None:
+        declared_res = getattr(hf_cfg, "image_size", None)
+        if declared_res is not None and resolution != declared_res:
+            warns.append(
+                f"resolution {resolution} differs from the model's declared "
+                f"image_size {declared_res}; models with fixed position embeddings "
+                "(ViT/DeiT/Swin/...) will fail outright at a different size"
+            )
 
     os.environ["XMEM_INFER"] = "1"
     os.environ["XMEM_PARAM_BYTES"] = str(pb)      # CNN 경로에서만 사용됨
@@ -253,7 +290,7 @@ def run(args):
         "input": {
             "model": args.model, "type": kind, "batch_size": args.batch_size,
             "seq_len": args.seq_len if kind == "llm" else None,
-            "resolution": args.resolution if kind == "vision" else None,
+            "resolution": resolution if kind == "vision" else None,
             "dtype": args.dtype, "mode": args.mode,
             "max_new_tokens": args.max_new_tokens if args.mode == "generate" else None,
         },
@@ -274,11 +311,15 @@ def run(args):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--json", help="모든 인자를 JSON 문자열로 전달")
+    p.add_argument("--json", help="모든 인자를 JSON 문자열로 전달. '-'이면 stdin에서 읽는다 "
+                                  "(model_config가 들어가면 수십 KB라 명령줄 길이 제한에 걸린다)")
     p.add_argument("--model")
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--seq_len", type=int, default=128)
-    p.add_argument("--resolution", type=int, default=224)
+    # default None: vision 경로에서 모델 config의 image_size를 기본값으로 쓰고,
+    # 그것도 없으면 run()이 224로 떨어뜨린다.
+    p.add_argument("--resolution", type=int, default=None)
+    p.add_argument("--workload_type", choices=sorted(WORKLOAD_MODEL_CLASS), default=None)
     p.add_argument("--dtype", choices=list(DTYPE_SCALE), default="fp16")
     p.add_argument("--mode", choices=["prefill", "generate"], default="prefill")
     p.add_argument("--max_new_tokens", type=int, default=256)
@@ -286,7 +327,8 @@ def main():
     a = p.parse_args()
 
     if a.json:
-        for k, v in json.loads(a.json).items():
+        raw = sys.stdin.read() if a.json == "-" else a.json
+        for k, v in json.loads(raw).items():
             setattr(a, k, v)
     if not a.model:
         p.error("--model is required")

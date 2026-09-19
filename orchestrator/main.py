@@ -44,13 +44,11 @@ app = FastAPI(title="CloudGPUFit Orchestrator")
 job_queue: "asyncio.Queue[str]" = asyncio.Queue()
 setup_lock = asyncio.Lock()
 
-# The other 3 workload types aren't wired into predict_vram.py yet (no
-# encoder-decoder / audio dataset+loop support) — reject them here instead of
-# handing the subprocess a shape it can't run. NOTE: this stays {"decoder_llm"}
-# even though eager_runtime itself also supports vision_cls/text_encdec —
-# the VRAM step is still the gate, and only the intersection of what every
-# stage actually supports counts as pipeline-supported (CLAUDE_HANDOFF §14).
-SUPPORTED_TYPES = {"decoder_llm"}
+# Only the intersection of what every stage can actually run counts as
+# pipeline-supported, and the VRAM step is the narrower gate: eager_runtime
+# also claims text_encdec, but predict_vram.py has no encoder-decoder
+# dataset/loop yet, so that stays out until it does.
+SUPPORTED_TYPES = {"decoder_llm", "vision_cls"}
 CONTAINER_NAME = "xmem-cpu"
 EAGER_RUNTIME_ROOT = Path(__file__).parent / "eager_runtime"
 

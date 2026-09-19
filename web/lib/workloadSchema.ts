@@ -14,8 +14,6 @@ export interface NumberFieldSpec {
   kind: "number";
   default: number;
   hardMin?: number;
-  /** Soft range: values outside this still submit, but render a warning. */
-  validatedRange?: [number, number];
   showWhen?: (values: Record<string, unknown>) => boolean;
   helperText?: string;
 }
@@ -77,8 +75,8 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
     type: "decoder_llm",
     label: "Decoder-only LLM",
     fields: [
-      { key: "batch_size", label: "batch_size", kind: "number", default: 1, hardMin: 1, validatedRange: [1, 30] },
-      { key: "seq_len", label: "seq_len", kind: "number", default: 512, hardMin: 1, validatedRange: [128, 2048] },
+      { key: "batch_size", label: "batch_size", kind: "number", default: 1, hardMin: 1 },
+      { key: "seq_len", label: "seq_len", kind: "number", default: 512, hardMin: 1 },
       ...MODE_FIELD(256),
     ],
   },
@@ -86,7 +84,7 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
     type: "vision_cls",
     label: "Vision classification",
     fields: [
-      { key: "batch_size", label: "batch_size", kind: "number", default: 32, hardMin: 1, validatedRange: [32, 64] },
+      { key: "batch_size", label: "batch_size", kind: "number", default: 32, hardMin: 1 },
       { key: "resolution", label: "resolution", kind: "number", default: 224, hardMin: 32 },
     ],
   },
@@ -147,24 +145,10 @@ export function defaultValuesFor(
   return values;
 }
 
-export function warningForField(field: FieldSpec, values: Record<string, unknown>): string | null {
-  if (field.kind !== "number" || !field.validatedRange) return null;
-  if (field.showWhen && !field.showWhen(values)) return null;
-  const num = Number(values[field.key]);
-  if (!Number.isFinite(num)) return null;
-  const [lo, hi] = field.validatedRange;
-  if (num < lo || num > hi) {
-    return `검증 범위(${lo}-${hi})를 벗어난 값입니다. 결과를 참고용으로만 사용하세요.`;
-  }
-  return null;
-}
-
 /**
- * Mirrors orchestrator/workload_params.py. A warning (warningForField) means
- * "outside the range we validated against real GPUs, but still runnable"; an
- * error here means the request would be rejected, so submission is blocked.
- * The server re-checks all of this — this exists so the user sees the problem
- * next to the field instead of as a failed request.
+ * Mirrors orchestrator/workload_params.py. The server re-checks all of this —
+ * this exists so the user sees the problem next to the field instead of as a
+ * failed request.
  */
 export function errorForField(field: FieldSpec, values: Record<string, unknown>): string | null {
   if (field.kind !== "number") return null;
@@ -200,13 +184,7 @@ export function collectWarnings(
   type: Exclude<WorkloadType, "unsupported">,
   values: Record<string, unknown>
 ): string[] {
-  const schema = WORKLOAD_SCHEMAS[type];
   const warnings: string[] = [];
-
-  for (const field of schema.fields) {
-    const w = warningForField(field, values);
-    if (w) warnings.push(`${field.label}: ${w}`);
-  }
 
   if (values.mode === "generate") {
     warnings.push(GENERATE_MODE_WARNING);
