@@ -47,7 +47,18 @@ PHASE_FINALIZING = "결과 계산 중…"
 
 def build_xmem_args(payload: dict[str, Any]) -> dict[str, Any]:
     params = payload.get("params") or {}
-    merged = {"model": payload["model"], "batch_size": payload["batch_size"], **params}
+    # dtype lives on the top-level payload, not in params — it must be applied
+    # after the **params spread so it can't be shadowed by a stray params
+    # entry. Without it, predict_vram.py never receives --dtype and falls
+    # back to its own argparse default ("fp16"), silently re-scaling the
+    # FP32-profiled result with the wrong DTYPE_SCALE factor for any request
+    # that isn't fp16 (fp32 comes back at half its real size).
+    merged = {
+        "model": payload["model"],
+        "batch_size": payload["batch_size"],
+        **params,
+        "dtype": payload["dtype"],
+    }
     args = {k: v for k, v in merged.items() if k in XMEM_KEYS and v is not None}
     args["gpu_memory_gb"] = FIXED_GPU_MEMORY_GB
     return args
