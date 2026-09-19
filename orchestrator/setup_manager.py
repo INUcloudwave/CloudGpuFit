@@ -22,8 +22,10 @@ XMEM_REPO_URL = "https://github.com/Stone-ResearchLife/xMem"
 XMEM_COMMIT = "1ee4bd08dda277a6248abee5b6d40e0d6067efaa"
 
 # Where the CloudGPUFit repo (predict_vram.py + the patch file) lives.
-# Defaults to a sibling of this orchestrator/ directory.
-CLOUDGPUFIT_DIR = Path(os.environ.get("CLOUDGPUFIT_DIR", Path(__file__).parent.parent / "CloudGPUFit")).resolve()
+# Defaults to this orchestrator/ directory's parent, i.e. the repo root a
+# plain `git clone` produces (orchestrator/ sits directly under it) — not a
+# "CloudGPUFit" folder nested one level further down.
+CLOUDGPUFIT_DIR = Path(os.environ.get("CLOUDGPUFIT_DIR", Path(__file__).parent.parent)).resolve()
 
 # Host directory bind-mounted into the container at /work — same default
 # setup.sh uses (~/xmem-work), so a container created by either path is
@@ -33,6 +35,13 @@ WORK_DIR = Path(os.environ.get("XMEM_WORK_DIR", Path.home() / "xmem-work")).reso
 # Mounted into the container so models already downloaded survive a container
 # recreate (`docker rm xmem-cpu` + re-provision) instead of re-downloading.
 HF_CACHE_DIR = Path(os.environ.get("HF_CACHE_DIR", Path.home() / ".cache" / "huggingface")).resolve()
+
+# Written inside the CONTAINER's own filesystem (not under /work) right after
+# pip install succeeds. Deliberately not on the host mount: a `docker rm` +
+# recreate gets a fresh container filesystem with none of the pip packages,
+# and this marker must disappear along with them so readiness is re-checked
+# instead of trusting host-side state that survived the recreate.
+PIP_READY_MARKER = "/root/.cloudgpufit_pip_ready"
 
 PULL_TIMEOUT_SECONDS = 1800
 PIP_INSTALL_TIMEOUT_SECONDS = 1800
@@ -86,19 +95,28 @@ def _xmem_dir() -> Path:
 
 def _xmem_ready_on_host() -> bool:
     """True once clone+patch+copy have all landed on the host side (the part
-    of provisioning that a container restart can't undo). Doesn't check that
-    pip install succeeded inside the container — a partial pip install would
-    surface later as a job failure (model_load_failed/internal), not here."""
+    of provisioning that a container restart can't undo)."""
     return (_xmem_dir() / "predict_vram.py").exists()
 
 
+def _pip_ready_in_container() -> bool:
+    """True once PIP_PACKAGES are actually installed in THIS container
+    instance. A plain `docker exec ... test -f` is fast enough to run on
+    every /setup call (no need to cache it), and unlike checking host-side
+    files, it correctly comes back False after a `docker rm` + recreate even
+    though /work (and predict_vram.py on it) still looks fully set up."""
+    proc = _run(["docker", "exec", CONTAINER_NAME, "test", "-f", PIP_READY_MARKER])
+    return proc.returncode == 0
+
+
 def ensure_ready() -> dict:
-    """Idempotent and safe to call on every page load / model pick. A
-    container existing is NOT enough to call it "ready": `docker run`
-    succeeding and a later step (clone/patch/pip install) failing left a
-    container that's running but has an empty /work — every later call must
-    still notice that and finish the job, not just declare victory because
-    `docker inspect` says Running=true."""
+    """Idempotent and safe to call on every page load / model pick. Neither
+    a container existing nor /work looking populated is enough to call it
+    "ready": `docker run` succeeding and a later step (clone/patch/copy/pip
+    install) failing, or a container being recreated after `docker rm`, both
+    leave stale-looking state around — every call must still notice that and
+    finish the job, not just declare victory because `docker inspect` says
+    Running=true or because a previous attempt's file copy already landed."""
     state = container_state()
 
     if state == "missing":
@@ -112,7 +130,7 @@ def ensure_ready() -> dict:
     else:
         status = "already_running"
 
-    if not _xmem_ready_on_host():
+    if not _xmem_ready_on_host() or not _pip_ready_in_container():
         _finish_xmem_setup()
         status = "provisioned"
 
@@ -162,14 +180,7 @@ def _finish_xmem_setup() -> None:
         if proc.returncode != 0:
             raise SetupError(f"xMem 커밋 체크아웃 실패: {proc.stderr.strip()}")
 
-    patch_path = CLOUDGPUFIT_DIR / "xMem" / "patches" / "core_inference.patch"
-    check = _run(["git", "apply", "--check", str(patch_path)], cwd=xmem_dir)
-    if check.returncode == 0:
-        applied = _run(["git", "apply", str(patch_path)], cwd=xmem_dir)
-        if applied.returncode != 0:
-            raise SetupError(f"패치 적용 실패: {applied.stderr.strip()}")
-    # else: already applied, or a conflict setup.sh itself would also just
-    # warn about and leave for manual inspection — not fatal either way.
+    _apply_patch_if_needed(xmem_dir)
 
     shutil.copyfile(CLOUDGPUFIT_DIR / "predict_vram.py", xmem_dir / "predict_vram.py")
 
@@ -177,3 +188,37 @@ def _finish_xmem_setup() -> None:
     proc = _run(["docker", "exec", "-t", CONTAINER_NAME, "bash", "-c", pip_cmd], timeout=PIP_INSTALL_TIMEOUT_SECONDS)
     if proc.returncode != 0:
         raise SetupError(f"패키지 설치 실패: {proc.stderr.strip()}")
+
+    # Marker written LAST, only once every prior step in this function has
+    # actually succeeded — _pip_ready_in_container() keys off it, so a
+    # failure anywhere above (this function raises and stops) leaves it
+    # absent and the next /setup call retries from here instead of assuming
+    # the container is ready.
+    _run(["docker", "exec", CONTAINER_NAME, "touch", PIP_READY_MARKER])
+
+
+def _apply_patch_if_needed(xmem_dir: Path) -> None:
+    """Applies core_inference.patch, distinguishing "clean apply" from
+    "already applied" (harmless — happens on every retry after the first
+    successful setup, since patch+copy always re-run alongside pip install)
+    from a genuine conflict (the xMem checkout no longer matches either the
+    pre- or post-patch state, e.g. XMEM_COMMIT changed upstream) — the old
+    code treated the latter two identically as "not fatal", silently leaving
+    a conflicted checkout in place instead of surfacing it."""
+    patch_path = CLOUDGPUFIT_DIR / "xMem" / "patches" / "core_inference.patch"
+
+    forward_check = _run(["git", "apply", "--check", str(patch_path)], cwd=xmem_dir)
+    if forward_check.returncode == 0:
+        applied = _run(["git", "apply", str(patch_path)], cwd=xmem_dir)
+        if applied.returncode != 0:
+            raise SetupError(f"패치 적용 실패: {applied.stderr.strip()}")
+        return
+
+    reverse_check = _run(["git", "apply", "--check", "--reverse", str(patch_path)], cwd=xmem_dir)
+    if reverse_check.returncode == 0:
+        return  # already applied — expected on every retry past the first
+
+    raise SetupError(
+        "xMem 패치가 충돌 상태입니다 (이미 적용된 상태도, 새로 적용 가능한 상태도 아님). "
+        f"{xmem_dir} 의 xMem 체크아웃을 확인하세요.\n{forward_check.stderr.strip()}"
+    )

@@ -17,6 +17,12 @@ type SetupState = "idle" | "provisioning" | "ready" | "error";
 
 const HEALTH_POLL_MS = 5000;
 
+// How long to keep re-polling a 409 "in_progress" /setup response before
+// giving up and showing an error — bounds an otherwise-unbounded retry loop
+// if the OTHER in-flight setup call never finishes.
+const SETUP_POLL_INTERVAL_MS = 2000;
+const SETUP_POLL_MAX_ATTEMPTS = 30; // ~60s
+
 export default function Wizard() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -47,29 +53,62 @@ export default function Wizard() {
   useEffect(() => {
     if (jobId) return;
 
+    let cancelled = false;
+
     // Deferred one microtask so the "provisioning" flip isn't a synchronous
     // setState call at the top of the effect body (imperceptible delay; the
     // fetch below still dominates the actual wait).
     Promise.resolve().then(() => {
-      setSetupState("provisioning");
-      setSetupErrorMessage(null);
+      if (!cancelled) {
+        setSetupState("provisioning");
+        setSetupErrorMessage(null);
+      }
     });
 
-    fetch("/api/setup", { method: "POST" })
-      .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok || data.status === "error") {
+    async function callSetup(attempt: number): Promise<void> {
+      let res: Response;
+      let data: { status?: string; message?: string };
+      try {
+        res = await fetch("/api/setup", { method: "POST" });
+        data = await res.json();
+      } catch {
+        if (!cancelled) {
           setSetupState("error");
-          setSetupErrorMessage(data.message ?? "환경 준비 중 오류가 발생했습니다.");
+          setSetupErrorMessage("오케스트레이터에 연결할 수 없습니다.");
+        }
+        return;
+      }
+      if (cancelled) return;
+
+      // 409 means another /setup call (a second effect run under React
+      // StrictMode's dev double-invoke, another tab, ...) is already
+      // provisioning — that's not a failure, just wait for it and re-check
+      // instead of surfacing a false "환경 준비 실패".
+      if (res.status === 409 && data.status === "in_progress") {
+        if (attempt >= SETUP_POLL_MAX_ATTEMPTS) {
+          setSetupState("error");
+          setSetupErrorMessage("환경 준비가 예상보다 오래 걸리고 있습니다. 잠시 후 새로고침해보세요.");
           return;
         }
-        setSetupState("ready");
-        checkHealth();
-      })
-      .catch(() => {
+        setTimeout(() => callSetup(attempt + 1), SETUP_POLL_INTERVAL_MS);
+        return;
+      }
+
+      if (!res.ok || data.status === "error") {
         setSetupState("error");
-        setSetupErrorMessage("오케스트레이터에 연결할 수 없습니다.");
-      });
+        setSetupErrorMessage(data.message ?? "환경 준비 중 오류가 발생했습니다.");
+        return;
+      }
+
+      setSetupState("ready");
+      checkHealth();
+    }
+
+    callSetup(0);
+
+    return () => {
+      cancelled = true;
+    };
     // Mount-only: the whole point is to fire once, as early as possible.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
