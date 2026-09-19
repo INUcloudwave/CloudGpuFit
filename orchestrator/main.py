@@ -44,11 +44,9 @@ app = FastAPI(title="CloudGPUFit Orchestrator")
 job_queue: "asyncio.Queue[str]" = asyncio.Queue()
 setup_lock = asyncio.Lock()
 
-# Only the intersection of what every stage can actually run counts as
-# pipeline-supported, and the VRAM step is the narrower gate: eager_runtime
-# also claims text_encdec, but predict_vram.py has no encoder-decoder
-# dataset/loop yet, so that stays out until it does.
-SUPPORTED_TYPES = {"decoder_llm", "vision_cls"}
+# Every type here now has a real dataset/loop on the VRAM side and an
+# adapter on the Runtime side, so the two stages finally agree.
+SUPPORTED_TYPES = {"decoder_llm", "vision_cls", "text_encdec"}
 CONTAINER_NAME = "xmem-cpu"
 EAGER_RUNTIME_ROOT = Path(__file__).parent / "eager_runtime"
 

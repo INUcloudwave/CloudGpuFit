@@ -93,7 +93,7 @@ index 7df3b4842..df03775ca 100755
          _conf = self._config.model_copy(deep=True)
          try:
 diff --git a/perf_estimator/estimator.py b/perf_estimator/estimator.py
-index e9b271b12..7c3dc02d6 100755
+index e9b271b12..a33649321 100755
 --- a/perf_estimator/estimator.py
 +++ b/perf_estimator/estimator.py
 @@ -76,7 +76,8 @@ class _Estimator(ABC):
@@ -118,3 +118,40 @@ index e9b271b12..7c3dc02d6 100755
              self._model_memory = model_blocks
          return copy.deepcopy(self._model_memory)
  
+@@ -311,18 +317,31 @@ class TrainerEstimator(_Estimator):
+                 self.config.trainer.huggingface_enable
+                 and self.config.trainer.huggingface_model_name is not None
+             ):
+-                from transformers import AutoConfig
++                import json as _json
++                import os as _os
+                 model_name = self.config.trainer.huggingface_model_name
+-                config = AutoConfig.from_pretrained(
+-                    model_name
+-                )  # load config; do NOT load pretrained weights
++                _config_json = _os.environ.get("XMEM_MODEL_CONFIG_JSON")
++                if _config_json:
++                    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
++                    _raw = _json.loads(_config_json)
++                    config = CONFIG_MAPPING[_raw["model_type"]].from_dict(_raw)
++                else:
++                    from transformers import AutoConfig
++                    config = AutoConfig.from_pretrained(
++                        model_name
++                    )  # load config; do NOT load pretrained weights
+                 if self.config.trainer.bf16:
+                     config.torch_dtype = torch.bfloat16
+                 elif self.config.trainer.fp16:
+                     config.torch_dtype = torch.float16
+                 else:
+                     config.torch_dtype = torch.float32
+-                model_class = suggest_automodel_class(model_name)
++                _model_class_name = _os.environ.get("XMEM_MODEL_CLASS")
++                if _model_class_name:
++                    import transformers as _transformers
++                    model_class = getattr(_transformers, _model_class_name)
++                else:
++                    model_class = suggest_automodel_class(model_name)
+                 model = model_class.from_config(config)
+                 if self.config.trainer.bf16:
+                     model = model.bfloat16()

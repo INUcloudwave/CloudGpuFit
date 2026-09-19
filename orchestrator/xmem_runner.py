@@ -29,6 +29,8 @@ XMEM_KEYS = {
     "model",
     "batch_size",
     "seq_len",
+    "encoder_seq_len",
+    "decoder_seq_len",
     "resolution",
     "dtype",
     "mode",

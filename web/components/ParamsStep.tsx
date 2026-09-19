@@ -32,7 +32,7 @@ interface Props {
 
 // Mirrors orchestrator/main.py SUPPORTED_TYPES — the types every stage of
 // the pipeline can actually run, not just the ones with an input form.
-const SUPPORTED_FOR_EXECUTION: WorkloadType[] = ["decoder_llm", "vision_cls"];
+const SUPPORTED_FOR_EXECUTION: WorkloadType[] = ["decoder_llm", "vision_cls", "text_encdec"];
 
 export default function ParamsStep({
   modelId,

@@ -53,6 +53,34 @@ class _LLMDataset(torch.utils.data.Dataset):
         return {"input_ids": ids, "attention_mask": torch.ones_like(ids)}
 
 
+class _EncDecDataset(torch.utils.data.Dataset):
+    """encoder_input_ids/decoder_input_ids를 따로 낸다. T5/BART 등의 forward는
+    이 두 시퀀스 길이가 독립이라, LLM 로더처럼 하나의 seq_len으로는 표현이 안 된다.
+    decoder_input_ids[0]에 decoder_start_token_id를 넣는 것은 실제 추론과의 형태를
+    맞추기 위함이고(값 자체는 메모리 사용량에 영향 없음), attention_mask는 인코더
+    입력에만 준다 — 디코더 쪽은 합성 데이터라 causal mask를 모델이 내부에서 만든다."""
+
+    def __init__(self, n, encoder_seq_len, decoder_seq_len, vocab_size, decoder_start_token_id):
+        self.n = n
+        self.encoder_seq_len, self.decoder_seq_len = encoder_seq_len, decoder_seq_len
+        self.vocab = max(2, min(vocab_size, 30000))
+        self.decoder_start_token_id = decoder_start_token_id
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, idx):
+        g = torch.Generator().manual_seed(idx)
+        enc_ids = torch.randint(0, self.vocab, (self.encoder_seq_len,), generator=g)
+        dec_ids = torch.randint(0, self.vocab, (self.decoder_seq_len,), generator=g)
+        dec_ids[0] = self.decoder_start_token_id
+        return {
+            "input_ids": enc_ids,
+            "attention_mask": torch.ones_like(enc_ids),
+            "decoder_input_ids": dec_ids,
+        }
+
+
 class _VisionDataset(torch.utils.data.Dataset):
     """(tensor, label) 튜플을 낸다 — conv_infer_loop이 `model(inputs)`처럼
     위치 인자 하나로 부르는 형태. HF 이미지 분류 모델도 forward의 첫 인자가
@@ -75,6 +103,13 @@ def build_loader(kind, batch_size, *, seq_len=None, resolution=None, vocab_size=
     n = batch_size * SAMPLES_PER_LOADER
     ds = (_LLMDataset(n, seq_len, vocab_size) if kind == "llm"
           else _VisionDataset(n, resolution, channels))
+    return torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
+
+
+def build_encdec_loader(batch_size, encoder_seq_len, decoder_seq_len, *,
+                        vocab_size, decoder_start_token_id):
+    n = batch_size * SAMPLES_PER_LOADER
+    ds = _EncDecDataset(n, encoder_seq_len, decoder_seq_len, vocab_size, decoder_start_token_id)
     return torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
 
 
@@ -232,15 +267,29 @@ def run(args):
     warnings.filterwarnings("ignore")
     torch.manual_seed(0)
 
+    workload_type = getattr(args, "workload_type", None)
     model, kind, hf_cfg = load_model(
         args.model,
         getattr(args, "model_config", None),
-        getattr(args, "workload_type", None),
+        workload_type,
     )
     pb = param_bytes(model)
 
     resolution = args.resolution
-    if kind == "llm":
+    if workload_type == "text_encdec":
+        # decoder_start_token_id는 0(T5의 실제 값)일 수 있어서 `or` 체인으로
+        # 이어붙이면 falsy로 오인해 다음 항목으로 넘어간다 — None 체크로만 판단.
+        decoder_start = getattr(hf_cfg, "decoder_start_token_id", None)
+        if decoder_start is None:
+            decoder_start = getattr(hf_cfg, "pad_token_id", None)
+        if decoder_start is None:
+            decoder_start = 0
+        loader = build_encdec_loader(
+            args.batch_size, args.encoder_seq_len, args.decoder_seq_len,
+            vocab_size=getattr(hf_cfg, "vocab_size", 30000),
+            decoder_start_token_id=decoder_start,
+        )
+    elif kind == "llm":
         loader = build_loader("llm", args.batch_size, seq_len=args.seq_len,
                               vocab_size=getattr(hf_cfg, "vocab_size", 30000))
     else:
@@ -268,6 +317,23 @@ def run(args):
     os.environ["XMEM_INFER"] = "1"
     os.environ["XMEM_PARAM_BYTES"] = str(pb)      # CNN 경로에서만 사용됨
 
+    # kind=="llm"이면 estimate()가 TrainerEstimator를 쓰는데, 그건 xMem 자체
+    # 코드에서 model_memory()를 계산하려고 AutoConfig.from_pretrained()와
+    # suggest_automodel_class()(pipeline_tag 조회)를 *또* 부른다 — 우리가 이미
+    # load_model()에서 받아둔 것과 같은 정보를 다시 HF에서 가져오는 것. 이걸
+    # 건너뛰게 하려고 core_inference.patch에 이 두 env var를 읽는 hunk를 추가
+    # 해뒀다. 원본 model_config가 없거나(레거시 CLI) workload_type을 안 줬으면
+    # 그냥 비워둬서 xMem 원래 동작(직접 fetch)으로 자연히 떨어진다.
+    raw_model_config = getattr(args, "model_config", None)
+    if kind == "llm" and raw_model_config is not None:
+        os.environ["XMEM_MODEL_CONFIG_JSON"] = json.dumps(raw_model_config)
+    else:
+        os.environ.pop("XMEM_MODEL_CONFIG_JSON", None)
+    if kind == "llm" and workload_type is not None:
+        os.environ["XMEM_MODEL_CLASS"] = WORKLOAD_MODEL_CLASS[workload_type][0]
+    else:
+        os.environ.pop("XMEM_MODEL_CLASS", None)
+
     trace = profile_on_cpu(model, loader, is_transformer=(kind == "llm"))
     raw = estimate(trace, args.batch_size, kind, args.model, args.gpu_memory_gb)
 
@@ -277,8 +343,11 @@ def run(args):
 
     kv = None
     if args.mode == "generate" and kind == "llm" and hf_cfg is not None:
+        # text_encdec generates past decoder_seq_len, not seq_len (that arg
+        # isn't even meaningful for this workload_type).
+        base_len = args.decoder_seq_len if workload_type == "text_encdec" else args.seq_len
         kv = kv_cache_bytes(hf_cfg, args.batch_size,
-                            args.seq_len + args.max_new_tokens, args.dtype)
+                            base_len + args.max_new_tokens, args.dtype)
         if kv is None:
             warns.append("KV cache could not be computed from the model config; "
                          "the result covers prefill only")
@@ -289,7 +358,9 @@ def run(args):
         "status": "ok",
         "input": {
             "model": args.model, "type": kind, "batch_size": args.batch_size,
-            "seq_len": args.seq_len if kind == "llm" else None,
+            "seq_len": args.seq_len if kind == "llm" and workload_type != "text_encdec" else None,
+            "encoder_seq_len": args.encoder_seq_len if workload_type == "text_encdec" else None,
+            "decoder_seq_len": args.decoder_seq_len if workload_type == "text_encdec" else None,
             "resolution": resolution if kind == "vision" else None,
             "dtype": args.dtype, "mode": args.mode,
             "max_new_tokens": args.max_new_tokens if args.mode == "generate" else None,
@@ -316,6 +387,8 @@ def main():
     p.add_argument("--model")
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--seq_len", type=int, default=128)
+    p.add_argument("--encoder_seq_len", type=int, default=512)
+    p.add_argument("--decoder_seq_len", type=int, default=128)
     # default None: vision 경로에서 모델 config의 image_size를 기본값으로 쓰고,
     # 그것도 없으면 run()이 224로 떨어뜨린다.
     p.add_argument("--resolution", type=int, default=None)
