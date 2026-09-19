@@ -58,8 +58,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "missing_id" }, { status: 400 });
   }
 
+  // A user-supplied token (gated model, e.g. Llama) wins over the server's
+  // own HF_TOKEN -- it's checking access under the user's own HF identity,
+  // not the server operator's. Read from a header, never a query string, so
+  // it doesn't end up in URLs that get logged.
+  const userToken = req.headers.get("x-hf-token")?.trim();
   const headers: Record<string, string> = {};
-  if (process.env.HF_TOKEN) {
+  if (userToken) {
+    headers.Authorization = `Bearer ${userToken}`;
+  } else if (process.env.HF_TOKEN) {
     headers.Authorization = `Bearer ${process.env.HF_TOKEN}`;
   }
 

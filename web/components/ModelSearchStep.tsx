@@ -28,12 +28,13 @@ interface Props {
   ) => void;
 }
 
+function isGatedResponse(status: number, body: ModelTypeErrorResponse | null): boolean {
+  return status === 401 || status === 403 || body?.error === "gated";
+}
+
 function classifyErrorMessage(status: number, body: ModelTypeErrorResponse | null): string {
   if (status === 404 || body?.error === "not_found") {
     return "이 저장소에는 config.json이 없습니다. transformers 호환 모델을 선택해주세요.";
-  }
-  if (status === 401 || status === 403 || body?.error === "gated") {
-    return "접근 제한된 모델입니다. 다른 모델을 선택해주세요.";
   }
   return "모델 유형을 확인하는 중 오류가 발생했습니다. 다시 시도해주세요.";
 }
@@ -47,6 +48,13 @@ export default function ModelSearchStep({ onClassified }: Props) {
   const [selected, setSelected] = useState<HfSearchResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [classifyError, setClassifyError] = useState<string | null>(null);
+  // Gated-model retry state. hfToken lives only here, in memory, for exactly
+  // as long as this component is mounted -- never sent anywhere but the one
+  // fetch below, never put in the job payload/DB/logs, cleared the moment a
+  // different model is picked or the query changes.
+  const [needsHfToken, setNeedsHfToken] = useState(false);
+  const [hfToken, setHfToken] = useState("");
+  const [tokenAttempted, setTokenAttempted] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -96,12 +104,18 @@ export default function ModelSearchStep({ onClassified }: Props) {
     setQuery(model.id);
     setResults([]);
     setClassifyError(null);
+    setNeedsHfToken(false);
+    setHfToken("");
+    setTokenAttempted(false);
   }
 
   function handleQueryChange(value: string) {
     setQuery(value);
     setSelected(null);
     setClassifyError(null);
+    setNeedsHfToken(false);
+    setHfToken("");
+    setTokenAttempted(false);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -125,14 +139,29 @@ export default function ModelSearchStep({ onClassified }: Props) {
     if (!selected) return;
     setChecking(true);
     setClassifyError(null);
+    const triedWithToken = needsHfToken && hfToken.trim().length > 0;
     try {
-      const res = await fetch(`/api/hf/model-type?id=${encodeURIComponent(selected.id)}`);
+      const res = await fetch(`/api/hf/model-type?id=${encodeURIComponent(selected.id)}`, {
+        headers: triedWithToken ? { "x-hf-token": hfToken.trim() } : undefined,
+      });
       const data = await res.json();
 
       if (!res.ok) {
+        if (isGatedResponse(res.status, data as ModelTypeErrorResponse)) {
+          setNeedsHfToken(true);
+          setTokenAttempted(triedWithToken);
+          setClassifyError(
+            triedWithToken
+              ? "토큰이 유효하지 않거나 이 모델에 대한 접근 권한이 없습니다. 다시 확인해주세요."
+              : "접근이 제한된 모델입니다. 해당 모델의 HF 토큰을 입력해주세요."
+          );
+          return;
+        }
         setClassifyError(classifyErrorMessage(res.status, data as ModelTypeErrorResponse));
         return;
       }
+
+      setNeedsHfToken(false);
 
       const body = data as ModelTypeResponse;
       if (!isSupported(body.type)) {
@@ -201,6 +230,26 @@ export default function ModelSearchStep({ onClassified }: Props) {
 
       {showSearchError && <p className="mt-2 text-sm text-red-600">{searchError}</p>}
       {classifyError && <p className="mt-2 text-sm text-red-600">{classifyError}</p>}
+
+      {needsHfToken && (
+        <div className="mt-3 space-y-1">
+          <label htmlFor="hf-token" className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            HF 토큰{tokenAttempted ? " (다시 확인)" : ""}
+          </label>
+          <input
+            id="hf-token"
+            type="password"
+            value={hfToken}
+            placeholder="hf_..."
+            autoComplete="off"
+            onChange={(e) => setHfToken(e.target.value)}
+            className="w-full rounded-lg border border-neutral-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:ring-neutral-700"
+          />
+          <p className="text-xs text-neutral-500">
+            이 모델에 접근 권한이 있는 계정의 토큰만 입력하세요. 서버에 저장되지 않고 이 확인에만 사용됩니다.
+          </p>
+        </div>
+      )}
 
       <div className="mt-6 flex justify-end">
         <button
