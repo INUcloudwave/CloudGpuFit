@@ -1,0 +1,14 @@
+# eager_runtime's dependencies (CLAUDE_HANDOFF_CLOUDGPUFIT_EAGER_RUNTIME.md §12).
+# Installed separately from requirements.txt because these are heavy
+# (torch especially) and only orchestrator needs them once it imports
+# eager_runtime directly in-process -- no dedicated Runtime HTTP server.
+#
+# Versions mirror the environment CLAUDE_HANDOFF_CLOUDGPUFIT_EAGER_RUNTIME.md
+# confirms eager_runtime was verified against (Python 3.11, CUDA not
+# required -- eager_runtime's target profiles are pre-calibrated, so a CPU
+# build of torch is enough to run predictions).
+torch
+torchvision
+transformers==4.45.1
+lightgbm
+pandas

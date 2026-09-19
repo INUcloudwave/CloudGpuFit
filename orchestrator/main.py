@@ -3,6 +3,13 @@ subprocess. Concurrency is fixed at 1 — xMem loads a full FP32 copy of the
 model into host RAM to profile it, so two runs at once tend to OOM each
 other. A single asyncio worker task enforces that; there is no external
 queue system.
+
+Since CLAUDE_HANDOFF_CLOUDGPUFIT_EAGER_RUNTIME.md's integration: after a
+VRAM prediction succeeds, process_job() also (1) filters AWS single-GPU
+G-series instances down to ones that fit the predicted VRAM/region/budget
+and have an installed eager_runtime target, then (2) asks eager_runtime for
+Eager FP16 Median/P90 on each of those candidates. eager_runtime is
+imported directly in-process (no dedicated Runtime HTTP server, per §1).
 """
 
 import asyncio
@@ -11,6 +18,7 @@ import json
 import logging
 import subprocess
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI
@@ -19,7 +27,12 @@ from pydantic import BaseModel
 
 import db
 import setup_manager
-from xmem_runner import build_xmem_args, cache_key_for, run_xmem
+from cache_key import pipeline_cache_key_for
+from eager_runtime import available_targets
+from instance_catalog import catalog_version, load_instance_catalog
+from instance_filter import filter_instances
+from runtime_adapter import predict_candidate_runtimes
+from xmem_runner import build_xmem_args, run_xmem
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("orchestrator")
@@ -31,9 +44,13 @@ setup_lock = asyncio.Lock()
 
 # The other 3 workload types aren't wired into predict_vram.py yet (no
 # encoder-decoder / audio dataset+loop support) — reject them here instead of
-# handing the subprocess a shape it can't run.
+# handing the subprocess a shape it can't run. NOTE: this stays {"decoder_llm"}
+# even though eager_runtime itself also supports vision_cls/text_encdec —
+# the VRAM step is still the gate, and only the intersection of what every
+# stage actually supports counts as pipeline-supported (CLAUDE_HANDOFF §14).
 SUPPORTED_TYPES = {"decoder_llm"}
 CONTAINER_NAME = "xmem-cpu"
+EAGER_RUNTIME_ROOT = Path(__file__).parent / "eager_runtime"
 
 
 class DeploymentIn(BaseModel):
@@ -79,15 +96,43 @@ async def process_job(job_id: str) -> None:
 
     xmem_args = build_xmem_args(payload)
     on_progress = functools.partial(db.set_progress, job_id)
-    outcome = await asyncio.to_thread(run_xmem, xmem_args, on_progress)
+    vram_outcome = await asyncio.to_thread(run_xmem, xmem_args, on_progress)
 
-    db.mark_finished(
-        job_id,
-        outcome.status,
-        result=outcome.result,
-        error_code=outcome.error_code,
-        error_message=outcome.error_message,
+    if vram_outcome.status != "succeeded":
+        db.mark_finished(
+            job_id,
+            vram_outcome.status,
+            error_code=vram_outcome.error_code,
+            error_message=vram_outcome.error_message,
+        )
+        return
+
+    # VRAM succeeded -> filter AWS candidates -> predict Runtime for them.
+    # A candidate list can legitimately come back empty (no catalog data yet,
+    # nothing fits budget/region, ...) -- that is a normal result, not a
+    # reason to mark the job failed (CLAUDE_HANDOFF §10, §17 test #7).
+    deployment = payload.get("deployment") or {}
+    instance_catalog = load_instance_catalog()
+    candidates = filter_instances(
+        required_vram_gb=vram_outcome.result["required_vram_gb"],
+        aws_region=deployment.get("aws_region"),
+        budget_usd_per_hour=deployment.get("budget_usd_per_hour"),
+        instance_catalog=instance_catalog,
+        installed_targets=available_targets(),
     )
+
+    runtime_result = await asyncio.to_thread(
+        predict_candidate_runtimes,
+        payload,
+        [candidate["instance_type"] for candidate in candidates],
+    )
+
+    result = {
+        "vram": vram_outcome.result,
+        "candidates": candidates,
+        "runtime": runtime_result,
+    }
+    db.mark_finished(job_id, "succeeded", result=result)
 
 
 @app.post("/jobs", status_code=202)
@@ -97,7 +142,12 @@ async def create_job(body: JobCreate):
 
     payload = body.model_dump()
     xmem_args = build_xmem_args(payload)
-    cache_key = cache_key_for(xmem_args)
+    cache_key = pipeline_cache_key_for(
+        xmem_args,
+        payload,
+        eager_runtime_root=EAGER_RUNTIME_ROOT,
+        catalog_version=catalog_version(),
+    )
 
     job_id = str(uuid.uuid4())
 

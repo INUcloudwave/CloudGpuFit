@@ -1,0 +1,120 @@
+{
+  "schema_version": 2,
+  "predictor_version": "eager_v4",
+  "target_instance": "g5.xlarge",
+  "mode": "eager",
+  "gpu_name": "NVIDIA A10G",
+  "environment": {
+    "EAGER_BASE_MODEL_DIR": ".",
+    "CACHE_MODEL_DIR": "cache_model",
+    "MEMORY_MODEL_DIR": "memory_model",
+    "SDPA_MODEL_DIR": "sdpa_model",
+    "POINTWISE_MODEL_DIR": "pointwise_model_v4",
+    "LINEAR_CONTEXT_MODEL_DIR": "linear_context_model_deep_v2",
+    "CONV1D_MODEL_DIR": "conv1d_model",
+    "EAGER_P90_CALIBRATION_FILE": "p90_calibration_factor.json",
+    "EAGER_HARDWARE_PROFILE": "hardware_profile.json"
+  },
+  "artifacts": [
+    {
+      "path": "cache_model/gemm_cache_eager_90th.pkl",
+      "size_bytes": 1656903,
+      "sha256": "86e0dbedad5315bb4e330baa6ce9e93de226045d97dfb3a3b7b85b423f3d7739"
+    },
+    {
+      "path": "cache_model/gemm_cache_eager_median.pkl",
+      "size_bytes": 1646509,
+      "sha256": "7274cb3a8c787147927b9dff12e196f21aca929f59d232d85657f717c24d7886"
+    },
+    {
+      "path": "conv1d_model/conv1d_eager_90th.pkl",
+      "size_bytes": 4290619,
+      "sha256": "2f9dac59d2e15d5eea561a081f152e92728224c32ca66d4b2a849c54b14a3967"
+    },
+    {
+      "path": "conv1d_model/conv1d_eager_median.pkl",
+      "size_bytes": 3815598,
+      "sha256": "dde980e51f988ef937b85f75c20c16ccae33e0d68fc477bc2dd946c16f6f56e8"
+    },
+    {
+      "path": "gemm_eager_90th.pkl",
+      "size_bytes": 1666755,
+      "sha256": "77e72a393d896de35330e1dd79136c7d1b3eec2294862876d38b8d664f11c602"
+    },
+    {
+      "path": "gemm_eager_median.pkl",
+      "size_bytes": 1638971,
+      "sha256": "c702e2e0391565fc0c8ddc1c9928d8fd7f4211c5a96d77c90ded95e37a540b20"
+    },
+    {
+      "path": "hardware_profile.json",
+      "size_bytes": 734,
+      "sha256": "c6d4c9107bbca2e51cf4287c5125144263740f4c9f98919dfa97499767367290"
+    },
+    {
+      "path": "linear_context_model_deep_v2/gemm_context_global_eager_90th.pkl",
+      "size_bytes": 1746640,
+      "sha256": "d7a6bb3cbe4911a8e04b4cb312d77910e70112db46209f3252f21abd824a12f5"
+    },
+    {
+      "path": "linear_context_model_deep_v2/gemm_context_global_eager_median.pkl",
+      "size_bytes": 1622871,
+      "sha256": "bc704192789e0886d5eac00077f8d2cecc277a0c0a6e1a8bd5a5c76a0d3734ec"
+    },
+    {
+      "path": "linear_context_model_deep_v2/transformer_linear_eager_90th.pkl",
+      "size_bytes": 1655192,
+      "sha256": "2c0c932141a91c1a6db76fe4500dcf31bed74e6a1ead0cc7b375cdf93c20d82c"
+    },
+    {
+      "path": "linear_context_model_deep_v2/transformer_linear_eager_median.pkl",
+      "size_bytes": 1561963,
+      "sha256": "007429e4553cc965f1ccbb42c617451776f5e0c9bb85375a59a506fac989fde9"
+    },
+    {
+      "path": "memory_model/memory_eager_90th.pkl",
+      "size_bytes": 911514,
+      "sha256": "489d85881dee1d8b88c6c0ff452be103f6deb4f9e6d9b5eadb826a144eb3dbd9"
+    },
+    {
+      "path": "memory_model/memory_eager_median.pkl",
+      "size_bytes": 4486551,
+      "sha256": "6aed17ee8ee7c4766f384f179ed6d0b33db5ee08e185f7b7203a6288f893618f"
+    },
+    {
+      "path": "p90_calibration_factor.json",
+      "size_bytes": 1008,
+      "sha256": "df983b371b242840668eecf7f922bd696bd4064a0fd10bff39c81ef96d83fb02"
+    },
+    {
+      "path": "pointwise_model_v4/pointwise_eager_90th.pkl",
+      "size_bytes": 3936172,
+      "sha256": "e2814a730ce845b3a9a4bed540a9f51a7e6f510632d0676c8c2118b14399770e"
+    },
+    {
+      "path": "pointwise_model_v4/pointwise_eager_median.pkl",
+      "size_bytes": 8304523,
+      "sha256": "b21cdb2eceb1d3306bcb67231d7767c9adbb092799505d7ca3d76eb316ba0b8f"
+    },
+    {
+      "path": "reduction_eager_90th.pkl",
+      "size_bytes": 1418687,
+      "sha256": "904f1f2ca3f0ae31ea3abc48973aebf3393bea73a2aa3b755c586eb63e48d48d"
+    },
+    {
+      "path": "reduction_eager_median.pkl",
+      "size_bytes": 1231955,
+      "sha256": "f663cc4a4be28a4b10143bced3c6206d78a0939a78d9d7cb5e0ee70af4275b84"
+    },
+    {
+      "path": "sdpa_model/sdpa_eager_90th.pkl",
+      "size_bytes": 2435296,
+      "sha256": "edb6d18ef0dde07840d4d34063e3451d50a65f56bca92b49f3bf090f1f5f2e14"
+    },
+    {
+      "path": "sdpa_model/sdpa_eager_median.pkl",
+      "size_bytes": 2374872,
+      "sha256": "9edc17768b60da1f72a5fc946562d3034c18249e2a0d33172df6a6257714f8e3"
+    }
+  ]
+}

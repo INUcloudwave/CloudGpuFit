@@ -1,0 +1,22 @@
+[
+  {
+    "instance_type": "g4dn.xlarge",
+    "aws_region": "us-east-1",
+    "price_usd_per_hour": 0.526
+  },
+  {
+    "instance_type": "g5.xlarge",
+    "aws_region": "us-east-1",
+    "price_usd_per_hour": 1.006
+  },
+  {
+    "instance_type": "g6.xlarge",
+    "aws_region": "us-east-1",
+    "price_usd_per_hour": 0.8048
+  },
+  {
+    "instance_type": "g6e.xlarge",
+    "aws_region": "us-east-1",
+    "price_usd_per_hour": 1.861
+  }
+]

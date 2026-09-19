@@ -1,0 +1,20 @@
+{
+  "target_instance": "g4dn.xlarge",
+  "gpu_name": "Tesla T4",
+  "peak_flops": 65000000000000.0,
+  "sm_count": 40,
+  "peak_bandwidth": 320000000000.0,
+  "precision_bytes": 2,
+  "l2_cache_bytes": 4194304,
+  "t_h2d_base": 0.002685997131932183,
+  "t_d2h_base": 0.0033327554189881425,
+  "bw_h2d_GBs": 6.266315351494251,
+  "bw_d2h_GBs": 6.602169103316281,
+  "t_dispatch_light": 0.010553609999988112,
+  "t_dispatch_heavy": 0.022555470000042988,
+  "t_sync": 0.005491271999972014,
+  "t_python_loop": 7.221180001124593e-05,
+  "t_pytorch_overhead": 0.0,
+  "host_schedule_scale": 1.0,
+  "host_schedule_policy": "vision_conv2d"
+}

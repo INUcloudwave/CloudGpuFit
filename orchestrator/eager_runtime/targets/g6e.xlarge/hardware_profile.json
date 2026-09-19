@@ -1,0 +1,22 @@
+{
+  "target_instance": "g6e.xlarge",
+  "gpu_name": "NVIDIA L40S",
+  "peak_flops": 362050000000000.0,
+  "sm_count": 142,
+  "peak_bandwidth": 864000000000.0,
+  "precision_bytes": 2,
+  "l2_cache_bytes": 100663296,
+  "t_h2d_base": 0.0021491312230006443,
+  "t_d2h_base": 0.0014816901017917772,
+  "bw_h2d_GBs": 13.472438499657395,
+  "bw_d2h_GBs": 13.216946905622699,
+  "t_dispatch_light": 0.006753250000315347,
+  "t_dispatch_heavy": 0.01999575000013465,
+  "t_sync": 0.0040738920000080725,
+  "t_python_loop": 5.608230000007097e-05,
+  "t_pytorch_overhead": 0.0,
+  "host_schedule_scale": 2.4,
+  "host_schedule_policy": "vision_conv2d",
+  "host_schedule_scale_source": "core_vision_validation",
+  "host_schedule_scale_calibration_rows": 12
+}

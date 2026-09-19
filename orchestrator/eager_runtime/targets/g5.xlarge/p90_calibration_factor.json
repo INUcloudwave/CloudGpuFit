@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "mode": "eager",
+  "method": "global_conformal_ratio",
+  "target_coverage": 0.9,
+  "factor": 1.0133162688819821,
+  "factor_floor": 1.0,
+  "quantile_rule": "ceil((n + 1) * target_coverage), capped at n",
+  "quantile_rank": 45,
+  "calibration_rows": 48,
+  "calibration_models": [
+    "bert_base",
+    "mobilenet_v2",
+    "opt_125m",
+    "qwen2_1_5b",
+    "resnet18",
+    "roberta_base",
+    "t5_small",
+    "wav2vec2_6layer"
+  ],
+  "holdout_rows": 24,
+  "holdout_models": [
+    "bart",
+    "efficientnet_b0",
+    "hubert",
+    "llama"
+  ],
+  "holdout_coverage": 0.9583333333333334,
+  "holdout_covered_rows": 23,
+  "holdout_meets_target": true,
+  "modelwise_cv_coverage": 0.9166666666666666,
+  "modelwise_cv_covered_rows": 44,
+  "modelwise_cv_meets_target": true,
+  "application": "calibrated_p90_ms = existing_predicted_p90_ms * factor",
+  "important": "existing_predicted_p90_ms is the conservative P90 output, not the median. Do not multiply the median directly by this factor."
+}

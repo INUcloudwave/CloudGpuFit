@@ -1,0 +1,22 @@
+{
+  "target_instance": "g5.xlarge",
+  "gpu_name": "NVIDIA A10G",
+  "peak_flops": 125000000000000.0,
+  "sm_count": 80,
+  "peak_bandwidth": 600000000000.0,
+  "precision_bytes": 2,
+  "l2_cache_bytes": 6291456,
+  "t_h2d_base": 0.0023447919750019253,
+  "t_d2h_base": 0.0019583371919953407,
+  "bw_h2d_GBs": 13.471261302194822,
+  "bw_d2h_GBs": 13.217500417748967,
+  "t_dispatch_light": 0.009308219998729328,
+  "t_dispatch_heavy": 0.0215532000015628,
+  "t_sync": 0.005091129999982513,
+  "t_python_loop": 6.404250000286993e-05,
+  "t_pytorch_overhead": 0.0,
+  "host_schedule_scale": 2.319,
+  "host_schedule_policy": "vision_conv2d",
+  "host_schedule_scale_source": "core_vision_mape_grid_search",
+  "host_schedule_scale_calibration_rows": 12
+}

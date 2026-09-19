@@ -86,6 +86,74 @@ export interface XMemResult {
   elapsed_seconds: number;
 }
 
+/** instance_filter.filter_instances()'s output shape — one AWS single-GPU
+ * G-series candidate that passed VRAM/region/budget/installed-target checks. */
+export interface InstanceCandidate {
+  instance_type: string;
+  gpu_name: string;
+  gpu_count: number;
+  gpu_vram_gb: number;
+  /** null means "available, price not in the catalog yet" — never a
+   * stand-in for zero or unaffordable. */
+  price_usd_per_hour: number | null;
+  aws_region: string;
+}
+
+/** One target's result from eager_runtime.predict_runtime_targets(). */
+export interface RuntimePrediction {
+  status: "ok" | "error";
+  model?: string;
+  model_type?: string;
+  workload_type?: string;
+  target_instance: string;
+  target_gpu?: string;
+  engine_mode?: string;
+  dtype?: string;
+  batch_size?: number;
+  params?: Record<string, ParamValue>;
+  predicted_median_ms?: number;
+  predicted_p90_ms?: number;
+  warnings?: string[];
+  breakdown?: Record<string, unknown>;
+  error_type?: string;
+  error?: string;
+}
+
+/**
+ * "ok"/"partial"/"error" come straight from eager_runtime.predict_runtime_targets().
+ * "skipped" = runtime_adapter refused the request outright (bad dtype/mode/type)
+ *   before ever calling eager_runtime.
+ * "no_installed_targets" = every candidate target lacked an installed eager_runtime profile.
+ * "no_candidates" = instance_filter found zero AWS candidates — a normal filter
+ *   result (e.g. no catalog data yet, nothing fit budget/region), not an error.
+ */
+export type RuntimeResultStatus =
+  | "ok"
+  | "partial"
+  | "error"
+  | "skipped"
+  | "no_installed_targets"
+  | "no_candidates";
+
+export interface RuntimeTargetsResult {
+  status: RuntimeResultStatus;
+  error_code?: string;
+  error_message?: string;
+  model?: string;
+  requested_targets: string[];
+  not_installed_targets?: string[];
+  succeeded: number;
+  failed: number;
+  predictions: RuntimePrediction[];
+}
+
+/** orchestrator/main.py's process_job() result once Runtime prediction is wired in. */
+export interface CombinedPredictionResult {
+  vram: XMemResult;
+  candidates: InstanceCandidate[];
+  runtime: RuntimeTargetsResult;
+}
+
 export type JobErrorCode = "oom" | "timeout" | "model_load_failed" | "unsupported_type" | "internal";
 
 export interface JobError {
@@ -99,7 +167,7 @@ export interface JobResponse {
   cached: boolean;
   progress: string | null;
   payload: PredictPayload;
-  result: XMemResult | null;
+  result: CombinedPredictionResult | null;
   error: JobError | null;
 }
 

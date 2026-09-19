@@ -1,0 +1,9 @@
+{
+  "model": "microsoft/resnet-50",
+  "dtype": "fp16",
+  "batch_size": 1,
+  "params": {
+    "resolution": 224,
+    "mode": "prefill"
+  }
+}

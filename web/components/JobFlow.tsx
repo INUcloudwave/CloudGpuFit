@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { JobResponse, PredictPayload } from "@/lib/types";
+import type { InstanceCandidate, JobResponse, PredictPayload, RuntimePrediction } from "@/lib/types";
 import { errorMessageFor, BREAKDOWN_LABELS } from "@/lib/jobErrors";
 import { formatBytesToGb } from "@/lib/format";
 import { WORKLOAD_SCHEMAS } from "@/lib/workloadSchema";
@@ -48,6 +48,76 @@ function ConditionsSummary({ payload }: { payload: PredictPayload }) {
         리전: {payload.deployment.aws_region} · 예산: ${payload.deployment.budget_usd_per_hour.toFixed(4)}/시간
       </p>
     </div>
+  );
+}
+
+function formatPrice(price: number | null): string {
+  return price === null ? "가격 미확인" : `$${price.toFixed(4)}/시간`;
+}
+
+function CandidateRuntimeTable({
+  candidates,
+  predictions,
+}: {
+  candidates: InstanceCandidate[];
+  predictions: RuntimePrediction[];
+}) {
+  const predictionByTarget = new Map(predictions.map((p) => [p.target_instance, p]));
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-700">
+      <table className="w-full text-sm">
+        <thead className="bg-neutral-50 text-left text-xs uppercase text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
+          <tr>
+            <th className="px-4 py-2">인스턴스</th>
+            <th className="px-4 py-2">GPU</th>
+            <th className="px-4 py-2">가격</th>
+            <th className="px-4 py-2">Median</th>
+            <th className="px-4 py-2">P90</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+          {candidates.map((candidate) => {
+            const prediction = predictionByTarget.get(candidate.instance_type);
+            const ok = prediction?.status === "ok";
+            return (
+              <tr key={candidate.instance_type}>
+                <td className="px-4 py-2 font-mono">{candidate.instance_type}</td>
+                <td className="px-4 py-2 text-neutral-600 dark:text-neutral-400">{candidate.gpu_name}</td>
+                <td className="px-4 py-2 text-neutral-600 dark:text-neutral-400">
+                  {formatPrice(candidate.price_usd_per_hour)}
+                </td>
+                <td className="px-4 py-2 font-mono">
+                  {ok ? `${prediction!.predicted_median_ms!.toFixed(2)} ms` : "—"}
+                </td>
+                <td className="px-4 py-2 font-mono">
+                  {ok ? `${prediction!.predicted_p90_ms!.toFixed(2)} ms` : "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Explains why there are 0 (or partial) runtime predictions — a normal
+ * filter/adapter outcome (§10/§17), not necessarily an error to alarm over. */
+function RuntimeStatusNote({ status, message }: { status: string; message?: string }) {
+  const text: Record<string, string> = {
+    no_candidates:
+      "조건(VRAM/리전/예산)을 만족하는 AWS 인스턴스 후보가 없습니다. 인스턴스 가격 데이터가 아직 등록되지 않았을 수 있습니다.",
+    no_installed_targets: "후보 인스턴스에 대해 설치된 eager_runtime 프로파일이 없습니다.",
+    skipped: message ?? "이 요청 조합은 현재 Runtime 예측 대상이 아닙니다.",
+    error: message ?? "Runtime 예측 중 오류가 발생했습니다.",
+  };
+  const body = text[status];
+  if (!body) return null;
+  return (
+    <p className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+      {body}
+    </p>
   );
 }
 
@@ -160,6 +230,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
   }
 
   const result = job.result!;
+  const { vram, candidates, runtime } = result;
   return (
     <div className="mx-auto w-full max-w-xl space-y-6">
       <ConditionsSummary payload={job.payload} />
@@ -172,15 +243,15 @@ export default function JobFlow({ jobId, onReset }: Props) {
 
       <div className="rounded-xl bg-neutral-900 p-6 text-center dark:bg-white">
         <p className="text-xs text-neutral-400 dark:text-neutral-600">required_vram_gb</p>
-        <p className="text-4xl font-bold text-white dark:text-neutral-900">{result.required_vram_gb} GB</p>
+        <p className="text-4xl font-bold text-white dark:text-neutral-900">{vram.required_vram_gb} GB</p>
       </div>
 
       <details className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
         <summary className="cursor-pointer text-sm font-medium text-neutral-700 dark:text-neutral-300">
-          상세 내역
+          VRAM 예측 상세 내역
         </summary>
         <dl className="mt-3 space-y-1.5 text-sm">
-          {Object.entries(result.breakdown_bytes).map(([key, value]) => (
+          {Object.entries(vram.breakdown_bytes).map(([key, value]) => (
             <div key={key} className="flex justify-between gap-4">
               <dt className="text-neutral-500">{BREAKDOWN_LABELS[key] ?? key}</dt>
               <dd className="font-mono text-neutral-800 dark:text-neutral-200">
@@ -191,25 +262,29 @@ export default function JobFlow({ jobId, onReset }: Props) {
         </dl>
       </details>
 
-      {result.warnings.length > 0 && (
+      {vram.warnings.length > 0 && (
         <div className="space-y-1 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-          {result.warnings.map((w, i) => (
+          {vram.warnings.map((w, i) => (
             <p key={i}>{w}</p>
           ))}
         </div>
       )}
 
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">인스턴스 후보 및 추론시간 예측</h3>
+        {candidates.length > 0 ? (
+          <CandidateRuntimeTable candidates={candidates} predictions={runtime.predictions} />
+        ) : (
+          <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />
+        )}
+        {candidates.length > 0 && runtime.status !== "ok" && (
+          <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />
+        )}
+      </div>
+
       <div className="flex items-center justify-between">
         <button type="button" onClick={onReset} className="text-sm text-neutral-500 underline underline-offset-2">
           새 예측 시작
-        </button>
-        <button
-          type="button"
-          disabled
-          title="Phase 3에서 구현"
-          className="rounded-lg bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-neutral-900"
-        >
-          다음: 인스턴스 후보 조회
         </button>
       </div>
     </div>

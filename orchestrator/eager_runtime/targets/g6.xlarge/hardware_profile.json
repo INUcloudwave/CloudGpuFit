@@ -1,0 +1,20 @@
+{
+  "target_instance": "g6.xlarge",
+  "gpu_name": "NVIDIA L4",
+  "peak_flops": 125300000000000.0,
+  "sm_count": 58,
+  "peak_bandwidth": 300100000000.0,
+  "precision_bytes": 2,
+  "l2_cache_bytes": 50331648,
+  "t_h2d_base": 0.00194,
+  "t_d2h_base": 0.00147,
+  "bw_h2d_GBs": 13.47,
+  "bw_d2h_GBs": 13.22,
+  "t_dispatch_light": 0.00645,
+  "t_dispatch_heavy": 0.02002,
+  "t_sync": 0.00386,
+  "t_python_loop": 0.00006,
+  "t_pytorch_overhead": 0.0,
+  "host_schedule_scale": 2.4,
+  "host_schedule_policy": "vision_conv2d"
+}
