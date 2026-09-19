@@ -61,7 +61,7 @@ class Conv1dContextFXGraphParser(v8.FidelityFXGraphParser):
             return graph
         if len(parsed_convs) != len(fx_convs):
             print(
-                "⚠️ Conv1d context routing skipped: count mismatch "
+                "Conv1d context routing skipped: count mismatch "
                 f"({len(parsed_convs)} parsed, {len(fx_convs)} FX)"
             )
             return graph

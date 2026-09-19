@@ -235,7 +235,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
   }
 
   const result = job.result!;
-  const { vram, candidates, runtime } = result;
+  const { vram, candidates, catalog_error, runtime } = result;
   return (
     <div className="mx-auto w-full max-w-xl space-y-6">
       <ConditionsSummary payload={job.payload} slo={job.slo} />
@@ -279,6 +279,13 @@ export default function JobFlow({ jobId, onReset }: Props) {
         <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">인스턴스 후보 및 추론시간 예측</h3>
         {candidates.length > 0 ? (
           <CandidateRuntimeTable candidates={candidates} predictions={runtime.predictions} />
+        ) : catalog_error ? (
+          // A real fetch failure, not "nothing fit" -- shown instead of the
+          // generic no_candidates note so a network/AWS-side problem isn't
+          // mistaken for "this region just doesn't sell these instances".
+          <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-400">
+            AWS 가격 조회에 실패했습니다: {catalog_error}
+          </p>
         ) : (
           <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />
         )}

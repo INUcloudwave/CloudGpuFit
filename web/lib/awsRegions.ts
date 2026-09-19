@@ -1,4 +1,6 @@
-// TODO: Phase 3에서 AWS Pricing API 기반 동적 조회로 교체
+// Which regions the picker offers is still this static list — prices for
+// whichever one is picked now come from a live AWS fetch (orchestrator/
+// aws_pricing.py), but the region list itself isn't fetched from anywhere.
 export interface AwsRegionOption {
   code: string;
   label: string;

@@ -121,7 +121,7 @@ def make_light_node(op_type, node, output_elements, out_shape, module=None):
 
 class FXGraphParser:
     def __init__(self):
-        print("🔍 FX Graph Parser 초기화 중 (Analytical Fusion Group ⚡ 활성화)...")
+        print("FX Graph Parser 초기화 중 (Analytical Fusion Group  활성화)...")
         
     def trace_model(self, model, dummy_input, is_hf=False):
         model.eval()
@@ -311,7 +311,7 @@ class FXGraphParser:
 
 class SimulatorRouter:
     def __init__(self, engine_mode="eager"):
-        print(f"🚀 CloudSim Router 초기화 중 (모드: {engine_mode.upper()})...")
+        print(f" CloudSim Router 초기화 중 (모드: {engine_mode.upper()})...")
         self.engine_mode = engine_mode
         try:
             clean_mode = "eager"

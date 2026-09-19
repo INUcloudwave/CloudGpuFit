@@ -227,7 +227,7 @@ class LinearContextFXGraphParser(sdpa_v5.SDPAAwareFXGraphParser):
         ]
         if len(parsed_linears) != len(graph_linears):
             print(
-                "⚠️ Transformer Linear routing skipped: FX/parsed Linear count "
+                "Transformer Linear routing skipped: FX/parsed Linear count "
                 f"mismatch ({len(graph_linears)} vs {len(parsed_linears)})"
             )
             return fused_graph
@@ -372,7 +372,7 @@ class LinearContextSimulatorRouter(sdpa_v5.SDPAAwareSimulatorRouter):
                 + ", ".join(sorted(missing))
             )
         print(
-            "⚠️ v6 P90 is diagnostic only: held-out BERT/RoBERTa "
+            "v6 P90 is diagnostic only: held-out BERT/RoBERTa "
             "coverage is not yet calibrated to 90%."
         )
 

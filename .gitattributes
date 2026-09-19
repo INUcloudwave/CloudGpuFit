@@ -1,0 +1,10 @@
+# eager_runtime's calibration artifacts (trained regressor .pkl files and
+# their accompanying manifest/hardware-profile .json) must round-trip
+# byte-for-byte. Without this, Windows checkouts with core.autocrlf=true
+# silently rewrite every lone LF inside the binary .pkl data into CRLF,
+# inflating each file and breaking its recorded sha256/size -- which
+# runtime_manifest.py's own validation then (correctly) reports as a
+# corrupted install. Confirmed real: git's own blob for one such .pkl is
+# byte-identical to the manifest's recorded size; only the Windows checkout
+# copy was inflated.
+orchestrator/eager_runtime/targets/** -text

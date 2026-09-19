@@ -26,6 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
+import aws_pricing
 import db
 import setup_manager
 from cache_key import pipeline_cache_key_for
@@ -161,10 +162,19 @@ async def process_job(job_id: str) -> None:
     # enough to deserve its own phase (filter_instances is in-memory).
     db.set_progress(job_id, "AWS GPU 인스턴스 정보 조회 및 후보 필터링 중…")
     deployment = payload.get("deployment") or {}
-    instance_catalog = load_instance_catalog()
+    aws_region = deployment.get("aws_region")
+    catalog_error: Optional[str] = None
+    try:
+        instance_catalog = await asyncio.to_thread(load_instance_catalog, aws_region)
+    except aws_pricing.PriceFetchError as exc:
+        # A live-fetch failure is not "no candidates fit" -- keep them
+        # distinguishable in the result instead of collapsing both into an
+        # empty candidates list with no explanation.
+        instance_catalog = []
+        catalog_error = str(exc)
     candidates = filter_instances(
         required_vram_gb=vram_outcome.result["required_vram_gb"],
-        aws_region=deployment.get("aws_region"),
+        aws_region=aws_region,
         budget_usd_per_hour=deployment.get("budget_usd_per_hour"),
         instance_catalog=instance_catalog,
         installed_targets=available_targets(),
@@ -180,6 +190,7 @@ async def process_job(job_id: str) -> None:
     result = {
         "vram": vram_outcome.result,
         "candidates": candidates,
+        "catalog_error": catalog_error,
         "runtime": runtime_result,
     }
     db.mark_finished(job_id, "succeeded", result=result)
@@ -192,11 +203,23 @@ async def create_job(body: JobCreate):
 
     payload = body.model_dump()
     xmem_args = build_xmem_args(payload)
+
+    # Warms the region's price cache (if it's cold) *before* the cache key is
+    # computed, so catalog_version() below reflects the data process_job()
+    # will actually read later instead of a "not fetched yet" placeholder
+    # from this instant -- otherwise two identical requests straddling that
+    # fetch would get different cache keys for the same underlying catalog.
+    aws_region = body.deployment.aws_region
+    try:
+        await asyncio.to_thread(load_instance_catalog, aws_region)
+    except aws_pricing.PriceFetchError as exc:
+        logger.warning("AWS 가격 사전 조회 실패 (%s): %s", aws_region, exc)
+
     cache_key = pipeline_cache_key_for(
         xmem_args,
         payload,
         eager_runtime_root=EAGER_RUNTIME_ROOT,
-        catalog_version=catalog_version(),
+        catalog_version=catalog_version(aws_region),
     )
 
     job_id = str(uuid.uuid4())

@@ -162,6 +162,10 @@ export interface RuntimeTargetsResult {
 export interface CombinedPredictionResult {
   vram: XMemResult;
   candidates: InstanceCandidate[];
+  /** Set only when the live AWS price fetch itself failed (network/parse) --
+   * distinct from a normal empty `candidates` (nothing fit, or this region
+   * genuinely doesn't sell any of the 4 target instances). */
+  catalog_error: string | null;
   runtime: RuntimeTargetsResult;
 }
 
