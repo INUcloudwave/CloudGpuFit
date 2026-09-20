@@ -2,22 +2,27 @@
 
 Validates/normalizes a CloudGPUFit `PredictPayload`-shaped dict against the
 Eager FP16 runtime predictor's supported range (CLAUDE_HANDOFF
-§3, §4, §14), then calls `eager_runtime.predict_runtime_targets()` for the
-intersection of the caller's candidate targets (usually
-`instance_filter.filter_instances()`'s output) and the targets
-`eager_runtime` actually has an installed profile for.
+§3, §4, §14), then calls `eager_runtime.predict_runtime_targets()` once per
+*unique* `eager_runtime_profile` needed by the caller's candidate targets
+(usually `instance_filter.filter_instances()`'s output), and fans each
+profile's result out to every candidate instance that borrows it.
 
 Runtime 전용 HTTP 서버는 만들지 않는다 (§1) — 같은 프로세스에서 eager_runtime을
 직접 import한다. 이 모듈이 하는 일은 오직: (1) CloudGPUFit payload를
 Runtime이 받는 형태로 정규화, (2) Runtime이 실행할 수 없는 조합을 미리
-걸러서 명확한 이유와 함께 거부, (3) 설치된 target과의 교집합 계산,
-(4) predict_runtime_targets() 호출과 결과를 그대로 전달.
+걸러서 명확한 이유와 함께 거부, (3) 각 후보 인스턴스를 그 인스턴스가 빌려 쓰는
+eager_runtime 프로파일에 매핑, (4) 프로파일별로 한 번씩만
+predict_runtime_targets()를 호출한 뒤 (5) 그 결과를 vCPU 스케일 적용해 각
+후보 인스턴스 이름으로 재배포. (3)~(5)는 임시방편이다 —
+`instance_filter.SUPPORTED_GPU_INSTANCES`의 FIXME(latency-proxy) 참고.
 """
 from __future__ import annotations
 
+import copy
 from typing import Any, Iterable, Mapping
 
 from eager_runtime import available_targets, predict_runtime_targets
+from instance_filter import SUPPORTED_GPU_INSTANCES, latency_scale_for_vcpu
 
 # eager_runtime이 실제로 지원 확정한 workload (§4). audio_encdec
 # (Whisper 계열 encoder-decoder)은 eager_runtime의 audio_encoder
@@ -119,10 +124,24 @@ def predict_candidate_runtimes(
         }
 
     installed = set(available_targets())
-    runnable_targets = [t for t in candidate_list if t in installed]
-    not_installed = [t for t in candidate_list if t not in installed]
 
-    if not runnable_targets:
+    # Every candidate is "runnable" through the eager_runtime profile it
+    # borrows (see instance_filter.SUPPORTED_GPU_INSTANCES's
+    # FIXME(latency-proxy) notes) -- only the 4 real .xlarge profiles ever
+    # get installed=False here, and only if eager_runtime's target directory
+    # itself is missing (a genuine environment problem, not this instance's
+    # own fault).
+    profile_for: dict[str, str] = {}
+    not_installed: list[str] = []
+    for t in candidate_list:
+        spec = SUPPORTED_GPU_INSTANCES.get(t)
+        profile = spec["eager_runtime_profile"] if spec else t
+        if profile in installed:
+            profile_for[t] = profile
+        else:
+            not_installed.append(t)
+
+    if not profile_for:
         return {
             "status": "no_installed_targets" if candidate_list else "no_candidates",
             "error_code": "no_installed_targets" if candidate_list else "no_candidates",
@@ -140,7 +159,58 @@ def predict_candidate_runtimes(
             "predictions": [],
         }
 
+    # Run eager_runtime exactly once per *unique* profile (at most 4), then
+    # fan each profile's result out to every candidate borrowing it, scaled
+    # by vCPU count. Cheaper than calling predict_runtime_targets 29 times
+    # for what's really only 4 distinct underlying predictions.
     request = _runtime_request(payload)
-    result = dict(predict_runtime_targets(request, targets=runnable_targets))
-    result["not_installed_targets"] = not_installed
-    return result
+    unique_profiles = list(dict.fromkeys(profile_for.values()))
+    profile_result = predict_runtime_targets(request, targets=unique_profiles)
+    prediction_by_profile = {p["target_instance"]: p for p in profile_result.get("predictions", [])}
+
+    predictions: list[dict[str, Any]] = []
+    for target, profile in profile_for.items():
+        base = prediction_by_profile.get(profile)
+        if base is None:
+            continue
+        prediction = copy.deepcopy(base)
+        prediction["target_instance"] = target
+        if profile != target and prediction.get("status") == "ok":
+            spec = SUPPORTED_GPU_INSTANCES[target]
+            scale = latency_scale_for_vcpu(spec["vcpu"])
+            for key in ("predicted_median_ms", "predicted_p90_ms"):
+                if prediction.get(key) is not None:
+                    prediction[key] *= scale
+            median_ms = prediction.get("predicted_median_ms")
+            batch_size = prediction.get("batch_size")
+            if median_ms and batch_size:
+                prediction["predicted_throughput_rps"] = batch_size / (median_ms / 1000.0)
+            # FIXME(latency-proxy): see instance_filter.SUPPORTED_GPU_INSTANCES --
+            # this is `profile`'s calibrated result with a placeholder vCPU-based
+            # scale applied, not a measurement of `target` itself.
+            prediction.setdefault("warnings", []).append(
+                f"latency/throughput borrowed from {profile}'s calibrated profile, "
+                f"scaled by vCPU count ({spec['vcpu']} vCPU) -- not independently "
+                "calibrated for this instance size (placeholder, see "
+                "instance_filter.SUPPORTED_GPU_INSTANCES FIXME)."
+            )
+        predictions.append(prediction)
+
+    succeeded = sum(p.get("status") == "ok" for p in predictions)
+    failed = len(predictions) - succeeded
+    if succeeded == len(predictions):
+        status = "ok"
+    elif succeeded:
+        status = "partial"
+    else:
+        status = "error"
+
+    return {
+        "status": status,
+        "model": profile_result.get("model", ""),
+        "requested_targets": candidate_list,
+        "not_installed_targets": not_installed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "predictions": predictions,
+    }

@@ -224,16 +224,15 @@ async def create_job(body: JobCreate):
 
     job_id = str(uuid.uuid4())
 
-    cached_row = db.find_succeeded_by_cache_key(cache_key)
-    if cached_row is not None:
-        result = json.loads(cached_row["result_json"])
-        ts = db.now_iso()
-        db.insert_job(
-            job_id, "succeeded", payload, cache_key,
-            cached=True, result=result, started_at=ts, finished_at=ts,
-        )
-        return {"job_id": job_id, "status": "succeeded", "cached": True}
-
+    # Cache-hit reuse disabled on purpose (was: db.find_succeeded_by_cache_key()
+    # short-circuiting straight to a stored old result). During active
+    # development of runtime_adapter.py/instance_filter.py, a match on
+    # cache_key silently served a result computed by an OLDER version of that
+    # code, which is indistinguishable from a bug in the running code unless
+    # you already suspect it. cache_key is still computed and stored on every
+    # row (still useful for debugging/inspection), it's just never looked up
+    # to skip real work anymore. Every submission always runs the full
+    # pipeline.
     db.insert_job(job_id, "queued", payload, cache_key, cached=False)
     await job_queue.put(job_id)
     return {"job_id": job_id, "status": "queued", "cached": False}

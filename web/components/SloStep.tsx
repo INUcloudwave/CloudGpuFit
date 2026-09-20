@@ -59,7 +59,7 @@ export default function SloStep({ jobId, onSubmitted }: Props) {
 
       <div className="space-y-1">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-          max_latency_ms — 허용 최대 p90 응답시간
+          max_latency_ms — 허용 최대 p90 Latency
         </label>
         <input
           type="number"
@@ -74,7 +74,7 @@ export default function SloStep({ jobId, onSubmitted }: Props) {
 
       <div className="space-y-1">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-          min_throughput_rps — 최소 허용 처리량
+          min_throughput_rps — 최소 허용 Throughput
         </label>
         <input
           type="number"

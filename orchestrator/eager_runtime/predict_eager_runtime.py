@@ -418,6 +418,16 @@ def _predict_or_raise(
     row = json_safe(rows[0])
     row["model"] = model_id
     hf_model_type = str(runtime_config["hf_model_type"])
+    predicted_median_ms = float(row["predicted_e2e_ms"])
+
+    # TODO(throughput): naive single-stream estimate -- one batch of
+    # `batch_size` samples completes every `predicted_median_ms`, back-to-back,
+    # with nothing else sharing the GPU. Ignores request queuing/batch-formation
+    # wait time, multiple concurrent streams, and steady-state GPU utilization
+    # effects (e.g. thermal/clock throttling under sustained load), so it's an
+    # upper bound, not a measured number. Replace with a real concurrent-load
+    # benchmark once one exists.
+    predicted_throughput_rps = batch_size / (predicted_median_ms / 1000.0)
 
     return {
         "status": "ok",
@@ -430,8 +440,9 @@ def _predict_or_raise(
         "dtype": "fp16",
         "batch_size": batch_size,
         "params": {key: value for key, value in normalized.items() if key != "batch_size"},
-        "predicted_median_ms": float(row["predicted_e2e_ms"]),
+        "predicted_median_ms": predicted_median_ms,
         "predicted_p90_ms": float(row["predicted_p90_ms"]),
+        "predicted_throughput_rps": predicted_throughput_rps,
         "warnings": warnings,
         "breakdown": row,
     }

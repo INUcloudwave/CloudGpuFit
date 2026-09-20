@@ -5,6 +5,8 @@ import type { InstanceCandidate, JobResponse, PredictPayload, RuntimePrediction,
 import { errorMessageFor, BREAKDOWN_LABELS } from "@/lib/jobErrors";
 import { formatBytesToGb } from "@/lib/format";
 import { WORKLOAD_SCHEMAS } from "@/lib/workloadSchema";
+import type { SloVerdict } from "@/lib/slo";
+import { rankCandidates, DEFAULT_WEIGHTS, type ImportanceWeights } from "@/lib/ranking";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -49,60 +51,165 @@ function ConditionsSummary({ payload, slo }: { payload: PredictPayload; slo: Slo
       </p>
       {slo && (
         <p className="mt-1 text-neutral-500">
-          SLO: p90 ≤ {slo.max_latency_ms}ms · 처리량 ≥ {slo.min_throughput_rps}req/s
+          SLO: p90 ≤ {slo.max_latency_ms}ms · Throughput ≥ {slo.min_throughput_rps}req/s
         </p>
       )}
     </div>
   );
 }
 
-function formatPrice(price: number | null): string {
-  return price === null ? "가격 미확인" : `$${price.toFixed(4)}/시간`;
+const SLO_BADGE_STYLE: Record<SloVerdict, string> = {
+  pass: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
+  fail: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
+  unknown: "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400",
+};
+
+const SLO_BADGE_LABEL: Record<SloVerdict, string> = {
+  pass: "충족",
+  fail: "미충족",
+  unknown: "미판정",
+};
+
+function SloBadge({ verdict }: { verdict: SloVerdict }) {
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${SLO_BADGE_STYLE[verdict]}`}>
+      {SLO_BADGE_LABEL[verdict]}
+    </span>
+  );
 }
 
-function CandidateRuntimeTable({
+function formatMonthlyCost(pricePerHour: number | null): string {
+  if (pricePerHour === null) return "비용 미확인";
+  const HOURS_PER_MONTH = 720; // 30일 * 24시간, orchestrator 쪽 예산 입력과 동일한 환산 기준
+  const monthly = pricePerHour * HOURS_PER_MONTH;
+  return `$${monthly.toLocaleString(undefined, { maximumFractionDigits: 2 })} /월`;
+}
+
+function RankingView({
+  job,
   candidates,
   predictions,
+  onReset,
 }: {
+  job: JobResponse;
   candidates: InstanceCandidate[];
   predictions: RuntimePrediction[];
+  onReset: () => void;
 }) {
-  const predictionByTarget = new Map(predictions.map((p) => [p.target_instance, p]));
+  // Draft slider position vs. the weights actually used for ranking -- the
+  // table only re-sorts when "적용" is clicked, not on every drag tick.
+  const [draftLatencyShare, setDraftLatencyShare] = useState(DEFAULT_WEIGHTS.latency);
+  const [appliedWeights, setAppliedWeights] = useState<ImportanceWeights>(DEFAULT_WEIGHTS);
+  const draftThroughputShare = 100 - draftLatencyShare;
+
+  const ranked = rankCandidates(candidates, predictions, job.slo, appliedWeights);
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-700">
-      <table className="w-full text-sm">
-        <thead className="bg-neutral-50 text-left text-xs uppercase text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
-          <tr>
-            <th className="px-4 py-2">인스턴스</th>
-            <th className="px-4 py-2">GPU</th>
-            <th className="px-4 py-2">가격</th>
-            <th className="px-4 py-2">Median</th>
-            <th className="px-4 py-2">P90</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-          {candidates.map((candidate) => {
-            const prediction = predictionByTarget.get(candidate.instance_type);
-            const ok = prediction?.status === "ok";
-            return (
-              <tr key={candidate.instance_type}>
-                <td className="px-4 py-2 font-mono">{candidate.instance_type}</td>
-                <td className="px-4 py-2 text-neutral-600 dark:text-neutral-400">{candidate.gpu_name}</td>
-                <td className="px-4 py-2 text-neutral-600 dark:text-neutral-400">
-                  {formatPrice(candidate.price_usd_per_hour)}
-                </td>
-                <td className="px-4 py-2 font-mono">
-                  {ok ? `${prediction!.predicted_median_ms!.toFixed(2)} ms` : "—"}
-                </td>
-                <td className="px-4 py-2 font-mono">
-                  {ok ? `${prediction!.predicted_p90_ms!.toFixed(2)} ms` : "—"}
-                </td>
+    <div className="mx-auto w-full max-w-6xl space-y-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_260px]">
+        <div>
+          <h2 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">GPU 인스턴스 추천 결과</h2>
+          <p className="mt-1 text-sm text-neutral-500">설정한 조건에 맞는 인스턴스를 비교해 보세요.</p>
+          <dl className="mt-4 space-y-1 text-sm">
+            <div className="flex gap-2">
+              <dt className="font-medium text-neutral-700 dark:text-neutral-300">리전</dt>
+              <dd className="text-neutral-600 dark:text-neutral-400">{job.payload.deployment.aws_region}</dd>
+            </div>
+            {job.slo && (
+              <div className="flex gap-2">
+                <dt className="font-medium text-neutral-700 dark:text-neutral-300">SLO</dt>
+                <dd className="text-neutral-600 dark:text-neutral-400">
+                  Latency ≤ {job.slo.max_latency_ms}ms · Throughput ≥ {job.slo.min_throughput_rps}req/s
+                </dd>
+              </div>
+            )}
+          </dl>
+        </div>
+
+        <div className="self-start rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+          <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Importance 조정</p>
+          <div className="mt-2 flex items-center justify-between text-xs text-neutral-500">
+            <span>Latency</span>
+            <span>Throughput</span>
+          </div>
+          <div className="flex items-baseline justify-between">
+            <span className="font-mono text-base font-semibold text-neutral-900 dark:text-neutral-100">
+              {(draftLatencyShare / 100).toFixed(2)}
+            </span>
+            <span className="font-mono text-base font-semibold text-neutral-900 dark:text-neutral-100">
+              {(draftThroughputShare / 100).toFixed(2)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={draftLatencyShare}
+            onChange={(e) => setDraftLatencyShare(Number(e.target.value))}
+            className="mt-1 w-full accent-neutral-800 dark:accent-white"
+          />
+          <p className="mt-1 text-center text-[11px] text-neutral-400">가중치 합계 1.00</p>
+          <button
+            type="button"
+            onClick={() => setAppliedWeights({ latency: draftLatencyShare, throughput: draftThroughputShare })}
+            className="mt-2 w-full rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-neutral-900"
+          >
+            적용
+          </button>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
+        <div className="border-b border-neutral-200 px-5 py-4 dark:border-neutral-700">
+          <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">추천 인스턴스</h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-neutral-50 text-left text-xs uppercase text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
+              <tr>
+                <th className="px-5 py-3">순위</th>
+                <th className="px-5 py-3">인스턴스</th>
+                <th className="px-5 py-3">p90 예상 Latency</th>
+                <th className="px-5 py-3">예상 Throughput</th>
+                <th className="px-5 py-3">SLO 상태</th>
+                <th className="px-5 py-3">예상 비용</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+              {ranked.map((r, i) => {
+                const p = r.prediction;
+                const ok = p?.status === "ok";
+                return (
+                  <tr key={r.candidate.instance_type}>
+                    <td className="px-5 py-3 font-mono text-neutral-400">{i + 1}</td>
+                    <td className="px-5 py-3 font-mono">{r.candidate.instance_type}</td>
+                    <td className="px-5 py-3 font-mono">
+                      {ok && p.predicted_p90_ms !== undefined ? `${p.predicted_p90_ms.toFixed(2)} ms` : "—"}
+                    </td>
+                    <td className="px-5 py-3 font-mono">
+                      {ok && p.predicted_throughput_rps !== undefined
+                        ? `${p.predicted_throughput_rps.toFixed(2)} req/s`
+                        : "—"}
+                    </td>
+                    <td className="px-5 py-3">
+                      <SloBadge verdict={r.sloVerdict} />
+                    </td>
+                    <td className="px-5 py-3 font-mono">{formatMonthlyCost(r.candidate.price_usd_per_hour)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={onReset}
+        className="rounded-lg border border-neutral-300 px-5 py-2.5 text-sm font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+      >
+        새 예측 시작
+      </button>
     </div>
   );
 }
@@ -129,7 +236,12 @@ function RuntimeStatusNote({ status, message }: { status: string; message?: stri
 export default function JobFlow({ jobId, onReset }: Props) {
   const [job, setJob] = useState<JobResponse | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Distinct from fetchError: a 404 means this job_id is gone for good (e.g.
+  // jobs.db was reset) -- retrying forever can't fix that, so polling stops
+  // and the UI offers a way out instead of spinning silently.
+  const [notFound, setNotFound] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [showRanking, setShowRanking] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -140,6 +252,11 @@ export default function JobFlow({ jobId, onReset }: Props) {
         const res = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
         const data = (await res.json()) as JobResponse;
         if (cancelled) return;
+
+        if (res.status === 404) {
+          setNotFound(true);
+          return;
+        }
 
         if (!res.ok) {
           setFetchError("작업 상태를 불러오지 못했습니다.");
@@ -181,6 +298,22 @@ export default function JobFlow({ jobId, onReset }: Props) {
   }, [job?.status]);
 
   if (!job) {
+    if (notFound) {
+      return (
+        <div className="mx-auto w-full max-w-xl space-y-4 text-center">
+          <p className="text-sm text-neutral-500">
+            이 작업을 찾을 수 없습니다. 삭제되었거나 만료된 job_id입니다.
+          </p>
+          <button
+            type="button"
+            onClick={onReset}
+            className="rounded-lg bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white dark:bg-white dark:text-neutral-900"
+          >
+            새 예측 시작
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="mx-auto w-full max-w-xl text-center text-sm text-neutral-500">
         {fetchError ?? "작업 정보를 불러오는 중…"}
@@ -236,6 +369,13 @@ export default function JobFlow({ jobId, onReset }: Props) {
 
   const result = job.result!;
   const { vram, candidates, catalog_error, runtime } = result;
+
+  if (showRanking) {
+    return (
+      <RankingView job={job} candidates={candidates} predictions={runtime.predictions} onReset={onReset} />
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-xl space-y-6">
       <ConditionsSummary payload={job.payload} slo={job.slo} />
@@ -275,30 +415,29 @@ export default function JobFlow({ jobId, onReset }: Props) {
         </div>
       )}
 
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">인스턴스 후보 및 추론시간 예측</h3>
-        {candidates.length > 0 ? (
-          <CandidateRuntimeTable candidates={candidates} predictions={runtime.predictions} />
-        ) : catalog_error ? (
-          // A real fetch failure, not "nothing fit" -- shown instead of the
-          // generic no_candidates note so a network/AWS-side problem isn't
-          // mistaken for "this region just doesn't sell these instances".
-          <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-400">
-            AWS 가격 조회에 실패했습니다: {catalog_error}
-          </p>
-        ) : (
-          <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />
-        )}
-        {candidates.length > 0 && runtime.status !== "ok" && (
-          <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />
-        )}
-      </div>
-
-      <div className="flex items-center justify-between">
-        <button type="button" onClick={onReset} className="text-sm text-neutral-500 underline underline-offset-2">
-          새 예측 시작
-        </button>
-      </div>
+      {candidates.length > 0 ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowRanking(true)}
+            className="w-full rounded-lg bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white dark:bg-white dark:text-neutral-900"
+          >
+            추천 순위 결과 보러가기
+          </button>
+          {runtime.status !== "ok" && (
+            <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />
+          )}
+        </>
+      ) : catalog_error ? (
+        // A real fetch failure, not "nothing fit" -- shown instead of the
+        // generic no_candidates note so a network/AWS-side problem isn't
+        // mistaken for "this region just doesn't sell these instances".
+        <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-400">
+          AWS 가격 조회에 실패했습니다: {catalog_error}
+        </p>
+      ) : (
+        <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />
+      )}
     </div>
   );
 }

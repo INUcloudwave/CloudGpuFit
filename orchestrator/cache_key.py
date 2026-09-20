@@ -30,7 +30,16 @@ VRAM_PREDICTOR_VERSION = "1"
 # for OUR adapter code -- changes to the target artifacts themselves are
 # already covered by eager_runtime_manifest_fingerprint() below, with no
 # manual bump needed.
-RUNTIME_PIPELINE_VERSION = "1"
+#
+# "2" reflects the 29-instance vCPU-scaling proxy added to
+# instance_filter.py/runtime_adapter.py -- bumped after the fact because the
+# cache-hit path (main.py's create_job()) was, at the time, still serving
+# pre-existing cached rows computed by the OLD adapter logic even after that
+# logic changed. The cache-hit lookup itself is now disabled in
+# create_job() for the same reason (every job re-runs the full pipeline), so
+# this version number is currently inert, but keep bumping it on adapter
+# changes anyway in case caching is ever turned back on.
+RUNTIME_PIPELINE_VERSION = "2"
 
 
 def eager_runtime_manifest_fingerprint(eager_runtime_root: Path) -> str:

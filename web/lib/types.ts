@@ -124,6 +124,10 @@ export interface RuntimePrediction {
   params?: Record<string, ParamValue>;
   predicted_median_ms?: number;
   predicted_p90_ms?: number;
+  /** Naive stub: batch_size / (predicted_median_ms / 1000), assuming
+   * back-to-back single-stream batches with no queuing or concurrency.
+   * An upper bound, not a measured number -- see predict_eager_runtime.py. */
+  predicted_throughput_rps?: number;
   warnings?: string[];
   breakdown?: Record<string, unknown>;
   error_type?: string;

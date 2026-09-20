@@ -40,6 +40,28 @@ uvicorn main:app --port 8000
 
 `web/.env.local`에 `ORCHESTRATOR_URL=http://localhost:8000` (기본값과 같으면 생략 가능).
 
+## 예측 파이프라인 (`POST /jobs` → `process_job()`)
+
+한 job(`main.py:process_job`)이 순서대로 하는 일:
+
+1. **VRAM 예측** — `xmem_runner.run_xmem()`이 `predict_vram.py`를 `xmem-cpu`
+   컨테이너 안에서 실행해 `required_vram_gb`를 얻는다.
+2. **인스턴스 후보 필터링** — `instance_catalog.load_instance_catalog()`가
+   `aws_pricing.py`로 해당 리전의 AWS 가격을 실시간 조회(Bulk Price List API,
+   자격증명 불필요, 디스크에 리전별 TTL 캐시)한 뒤, `instance_filter.py`가 VRAM·
+   리전·예산·설치된 eager_runtime 프로파일 조건으로 후보를 추린다.
+3. **Runtime(지연시간/처리량) 예측** — `runtime_adapter.py`가 후보마다
+   `eager_runtime.predict_runtime_targets()`를 호출해 median/P90 지연시간과
+   (나이브 추정) 처리량을 예측한다. `eager_runtime/` 자체의 아티팩트 구조·CLI
+   사용법은 [`eager_runtime/README_TARGETS.md`](eager_runtime/README_TARGETS.md)
+   참고.
+
+이 결과(`vram`/`candidates`/`runtime`)를 그대로 `GET /jobs/{id}`가 반환한다. SLO
+충족 판정과 중요도 기반 순위 매기기는 이 서버가 아니라 `web/lib/slo.ts`·
+`web/lib/ranking.ts`(순수 함수, 브라우저에서 계산)에서 이루어진다 — `PATCH
+/jobs/{id}/slo`는 사용자가 입력한 허용 기준을 저장만 할 뿐, 재계산이나 캐시 키에
+영향을 주지 않는다.
+
 ## 설계 메모
 
 - **동시 실행 = 1 고정.** `asyncio.Queue` + 워커 태스크 1개. xMem이 FP32 모델을
