@@ -1,0 +1,34 @@
+{
+  "model": "facebook/opt-350m",
+  "model_config_snapshot": {
+    "model_type": "opt",
+    "architectures": [
+      "OPTForCausalLM"
+    ],
+    "vocab_size": 50272,
+    "hidden_size": 1024,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 16,
+    "ffn_dim": 4096,
+    "max_position_embeddings": 2048,
+    "word_embed_proj_dim": 512,
+    "do_layer_norm_before": false,
+    "activation_function": "relu",
+    "pad_token_id": 1,
+    "bos_token_id": 2,
+    "eos_token_id": 2
+  },
+  "type": "decoder_llm",
+  "dtype": "fp16",
+  "batch_size": 4,
+  "params": {
+    "mode": "prefill",
+    "seq_len": 128
+  },
+  "deployment": {
+    "aws_region": "ap-northeast-2",
+    "budget_usd_per_hour": 10
+  },
+  "warnings": [],
+  "engine_mode": "eager"
+}

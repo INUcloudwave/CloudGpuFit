@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "target_instance": "g5.xlarge",
+  "gpu_name": "NVIDIA A10G",
+  "kernel_floor_ms": 0.001344,
+  "method": "median_small_single_inductor_kernel_duration",
+  "calibration": {
+    "dataset": "g5_compiled_fusion_pilot.csv",
+    "dataset_sha256": "f1355c6ad65b844b73920d6ed33a98156698fa95727958e9859c0062eac69923",
+    "roofline_threshold_ms": 1e-05,
+    "selected_rows": 5,
+    "selected_patterns": [
+      "add_relu",
+      "bias_gelu",
+      "layernorm",
+      "rmsnorm",
+      "softmax"
+    ],
+    "minimum_ms": 0.0012799999999997,
+    "maximum_ms": 0.0015680000000002
+  }
+}

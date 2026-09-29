@@ -1,0 +1,250 @@
+{
+  "schema_version": 2,
+  "predictor_version": "compiled_fusion_v2",
+  "target_instance": "g6e.xlarge",
+  "gpu_name": "NVIDIA L40S",
+  "engine": {
+    "backend": "inductor",
+    "compile_mode": "default",
+    "fullgraph": true,
+    "dynamic_shapes": false,
+    "measurement_scope": "inductor_lowered_fusion_group_kernel_sum"
+  },
+  "prediction_equation": "kernel_ms = max(roofline_ms, kernel_floor_ms) * expm1(lightgbm_ratio_log)",
+  "kernel_floor": {
+    "value_ms": 0.0013115,
+    "profile_path": "compiled_fusion_kernel_profile.json",
+    "profile_sha256": "cf91549d616364bbb40fb4a7c45e73ac2063142245e135a542f41dc1cde955d6",
+    "method": "median_small_single_inductor_kernel_duration"
+  },
+  "feature_schema": [
+    "Input_Bytes",
+    "Output_Bytes",
+    "Ideal_Memory_Bytes",
+    "Estimated_FLOPs",
+    "Arithmetic_Intensity",
+    "Output_Elements",
+    "Max_Node_Elements",
+    "Reduction_Size",
+    "Op_Count",
+    "Pointwise_Count",
+    "Reduction_Count",
+    "Memory_Count",
+    "Binary_Count",
+    "Broadcast_Count",
+    "Transcendental_Count",
+    "Input_Tensor_Count",
+    "Output_Tensor_Count",
+    "Rank",
+    "Last_Dim",
+    "Estimated_L2_Fit",
+    "Estimated_Wave_Count",
+    "Has_Heavy_Predecessor",
+    "Has_Heavy_Successor",
+    "Is_Pointwise_Group",
+    "Is_Reduction_Group",
+    "Is_Memory_Group",
+    "Precision_Bytes"
+  ],
+  "training_rows": 224,
+  "training_patterns": [
+    "add_relu",
+    "bias_gelu",
+    "broadcast_add_mul",
+    "gelu",
+    "layernorm",
+    "masked_softmax",
+    "pointwise_chain",
+    "reduce_sum",
+    "relu",
+    "residual_layernorm",
+    "residual_silu_mul",
+    "rmsnorm",
+    "sigmoid_mul",
+    "softmax"
+  ],
+  "shape_range": {
+    "rows": [
+      1,
+      8192
+    ],
+    "cols": [
+      64,
+      8960
+    ],
+    "elements": [
+      64,
+      18350080
+    ]
+  },
+  "cross_validation": {
+    "method": "five_fold_shape_holdout",
+    "median": {
+      "rows": 224,
+      "mape_percent": 11.267766853749302,
+      "median_ape_percent": 4.983927374539656,
+      "p90_ape_percent": 25.53706059688592,
+      "max_ape_percent": 205.75201838649443,
+      "rmse_ms": 0.009297312133492597
+    },
+    "median_by_kind": {
+      "pointwise": {
+        "rows": 128,
+        "mape_percent": 8.47930772538608,
+        "median_ape_percent": 3.556820117146599,
+        "p90_ape_percent": 23.50655501090295,
+        "max_ape_percent": 47.397685504937904,
+        "rmse_ms": 0.009084048957603333
+      },
+      "reduction": {
+        "rows": 96,
+        "mape_percent": 14.985712358233593,
+        "median_ape_percent": 7.869441584195604,
+        "p90_ape_percent": 33.63650150718891,
+        "max_ape_percent": 205.75201838649443,
+        "rmse_ms": 0.009574276447798093
+      }
+    },
+    "median_by_pattern_diagnostic": {
+      "add_relu": {
+        "rows": 16,
+        "mape_percent": 7.750709358719775,
+        "median_ape_percent": 2.3832272549649987,
+        "p90_ape_percent": 28.562382532153563,
+        "max_ape_percent": 31.738261130076108,
+        "rmse_ms": 0.011648159462433331
+      },
+      "bias_gelu": {
+        "rows": 16,
+        "mape_percent": 7.6731049662830255,
+        "median_ape_percent": 4.669493914493368,
+        "p90_ape_percent": 20.945676765688592,
+        "max_ape_percent": 22.385136807269003,
+        "rmse_ms": 0.001141926642933374
+      },
+      "broadcast_add_mul": {
+        "rows": 16,
+        "mape_percent": 10.3367614236833,
+        "median_ape_percent": 6.452253936205752,
+        "p90_ape_percent": 25.53706059688592,
+        "max_ape_percent": 33.42708602354089,
+        "rmse_ms": 0.01038641895621972
+      },
+      "gelu": {
+        "rows": 16,
+        "mape_percent": 9.521492401697811,
+        "median_ape_percent": 3.6620162089159862,
+        "p90_ape_percent": 23.65347919236095,
+        "max_ape_percent": 34.91147587005038,
+        "rmse_ms": 0.00246640118195379
+      },
+      "layernorm": {
+        "rows": 16,
+        "mape_percent": 14.026390664218162,
+        "median_ape_percent": 10.4299356834327,
+        "p90_ape_percent": 24.2763200836437,
+        "max_ape_percent": 73.86240110978538,
+        "rmse_ms": 0.010301321733619988
+      },
+      "masked_softmax": {
+        "rows": 16,
+        "mape_percent": 15.396329393790973,
+        "median_ape_percent": 7.320990955100125,
+        "p90_ape_percent": 41.3268321036225,
+        "max_ape_percent": 57.94945056191866,
+        "rmse_ms": 0.010406945476492388
+      },
+      "pointwise_chain": {
+        "rows": 16,
+        "mape_percent": 10.430832780152086,
+        "median_ape_percent": 7.6338815082643405,
+        "p90_ape_percent": 21.68539335531422,
+        "max_ape_percent": 47.397685504937904,
+        "rmse_ms": 0.008831302519579325
+      },
+      "reduce_sum": {
+        "rows": 16,
+        "mape_percent": 21.038349154641423,
+        "median_ape_percent": 6.7144638034876305,
+        "p90_ape_percent": 28.720003182645858,
+        "max_ape_percent": 205.75201838649443,
+        "rmse_ms": 0.005440472796534441
+      },
+      "relu": {
+        "rows": 16,
+        "mape_percent": 5.547730582993075,
+        "median_ape_percent": 3.050121363799029,
+        "p90_ape_percent": 13.053895213621047,
+        "max_ape_percent": 23.018837812015025,
+        "rmse_ms": 0.002005350744944009
+      },
+      "residual_layernorm": {
+        "rows": 16,
+        "mape_percent": 15.151055668314466,
+        "median_ape_percent": 14.843739775552729,
+        "p90_ape_percent": 33.63650150718891,
+        "max_ape_percent": 58.90573072708458,
+        "rmse_ms": 0.013231831884338033
+      },
+      "residual_silu_mul": {
+        "rows": 16,
+        "mape_percent": 9.520362392269753,
+        "median_ape_percent": 6.691241888508465,
+        "p90_ape_percent": 26.978365675191334,
+        "max_ape_percent": 30.31422830015238,
+        "rmse_ms": 0.009333918554778877
+      },
+      "rmsnorm": {
+        "rows": 16,
+        "mape_percent": 7.937072719956275,
+        "median_ape_percent": 4.988797486543605,
+        "p90_ape_percent": 17.97757964006717,
+        "max_ape_percent": 38.52853920515435,
+        "rmse_ms": 0.006199793259048068
+      },
+      "sigmoid_mul": {
+        "rows": 16,
+        "mape_percent": 7.05346789728981,
+        "median_ape_percent": 2.437248082837674,
+        "p90_ape_percent": 30.788249233174476,
+        "max_ape_percent": 38.05060607747257,
+        "rmse_ms": 0.015494506880784326
+      },
+      "softmax": {
+        "rows": 16,
+        "mape_percent": 16.365076548480275,
+        "median_ape_percent": 9.227967883103457,
+        "p90_ape_percent": 53.405842081312784,
+        "max_ape_percent": 64.2122945443357,
+        "rmse_ms": 0.00961568082159434
+      }
+    },
+    "p90_raw": {
+      "rows": 224,
+      "mape_percent": 11.16542865559387,
+      "median_ape_percent": 4.782249316781158,
+      "p90_ape_percent": 25.891321524169275,
+      "max_ape_percent": 237.19728521361895,
+      "rmse_ms": 0.009011673034281478
+    }
+  },
+  "p90_calibration": {
+    "method": "fusion_group_oof_conformal_ratio",
+    "target_coverage": 0.9,
+    "factor": 1.2450464575725226,
+    "quantile_rank": 203,
+    "oof_coverage": 0.90625
+  },
+  "artifacts": {
+    "median_model": {
+      "path": "compiled_fusion_median.txt",
+      "size_bytes": 537128,
+      "sha256": "6a706f753eb028f32c94366a067b768fbd099fac69e70a45e58f524c06b1cc4e"
+    },
+    "p90_model": {
+      "path": "compiled_fusion_p90.txt",
+      "size_bytes": 539473,
+      "sha256": "a2db124eb18c633bbd1f16658f94417b3b982506031cdcfb417d54c48b7cc069"
+    }
+  }
+}

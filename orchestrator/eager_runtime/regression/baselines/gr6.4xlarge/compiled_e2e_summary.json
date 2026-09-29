@@ -1,0 +1,189 @@
+{
+  "target_instance": "gr6.4xlarge",
+  "validation_data_scope": "target_specific",
+  "validation_data_root": "/home/ubuntu/gr6_l4_reuse_validation/targets/gr6.4xlarge/compiled_validation_data",
+  "validation_datasets": [
+    "compiled_core.csv",
+    "compiled_longseq.csv",
+    "compiled_encoder_seq512.csv"
+  ],
+  "total_rows": 78,
+  "successful_rows": 78,
+  "failed_rows": 0,
+  "overall": {
+    "rows": 78,
+    "mape_percent": 12.755292055569017,
+    "median_ape_percent": 10.83789300544961,
+    "p90_ape_percent": 27.179999125880816,
+    "max_ape_percent": 47.01548340817658,
+    "mean_bias_percent": -3.0649853207705497,
+    "rmse_ms": 9.306537774190987,
+    "p90_coverage": 0.5128205128205128
+  },
+  "by_validation_set": {
+    "compiled_core": {
+      "rows": 54,
+      "mape_percent": 9.969897917099265,
+      "median_ape_percent": 8.047645296861326,
+      "p90_ape_percent": 22.251978411301895,
+      "max_ape_percent": 41.480852448090474,
+      "mean_bias_percent": -6.485802603731446,
+      "rmse_ms": 1.4366368402879752,
+      "p90_coverage": 0.4444444444444444
+    },
+    "compiled_encoder_seq512": {
+      "rows": 6,
+      "mape_percent": 22.81993690072356,
+      "median_ape_percent": 20.914338658791735,
+      "p90_ape_percent": 33.94762777486872,
+      "max_ape_percent": 33.94762777486872,
+      "mean_bias_percent": -22.81993690072356,
+      "rmse_ms": 5.377192009930408,
+      "p90_coverage": 0.0
+    },
+    "compiled_longseq": {
+      "rows": 18,
+      "mape_percent": 17.756592855926765,
+      "median_ape_percent": 14.390324414751104,
+      "p90_ape_percent": 44.97158712300482,
+      "max_ape_percent": 47.01548340817658,
+      "mean_bias_percent": 13.782450388096484,
+      "rmse_ms": 18.960150024391115,
+      "p90_coverage": 0.8888888888888888
+    }
+  },
+  "by_workload_family": {
+    "audio_encoder": {
+      "rows": 3,
+      "mape_percent": 15.714425162324895,
+      "median_ape_percent": 12.199027572590733,
+      "p90_ape_percent": 25.43877879853446,
+      "max_ape_percent": 25.43877879853446,
+      "mean_bias_percent": -15.714425162324895,
+      "rmse_ms": 1.26751146030026,
+      "p90_coverage": 0.0
+    },
+    "decoder_llm": {
+      "rows": 30,
+      "mape_percent": 10.547819586896651,
+      "median_ape_percent": 5.088017320215494,
+      "p90_ape_percent": 38.74450505024573,
+      "max_ape_percent": 47.01548340817658,
+      "mean_bias_percent": 4.417505261712339,
+      "rmse_ms": 14.575160767787633,
+      "p90_coverage": 0.7666666666666667
+    },
+    "text_encdec": {
+      "rows": 15,
+      "mape_percent": 10.230665683324752,
+      "median_ape_percent": 10.54765779303515,
+      "p90_ape_percent": 23.22810402894365,
+      "max_ape_percent": 23.520461100818036,
+      "mean_bias_percent": 9.074990149631008,
+      "rmse_ms": 3.30039995015689,
+      "p90_coverage": 0.8
+    },
+    "text_encoder": {
+      "rows": 24,
+      "mape_percent": 15.463536765432897,
+      "median_ape_percent": 14.447334772393878,
+      "p90_ape_percent": 27.21580468562259,
+      "max_ape_percent": 33.94762777486872,
+      "mean_bias_percent": -14.742730833696456,
+      "rmse_ms": 2.9858051800980596,
+      "p90_coverage": 0.16666666666666666
+    },
+    "vision_cls": {
+      "rows": 6,
+      "mape_percent": 17.79167493670807,
+      "median_ape_percent": 16.4254015689594,
+      "p90_ape_percent": 41.480852448090474,
+      "max_ape_percent": 41.480852448090474,
+      "mean_bias_percent": -17.79167493670807,
+      "rmse_ms": 0.28250645125878227,
+      "p90_coverage": 0.16666666666666666
+    }
+  },
+  "by_model": {
+    "bert": {
+      "rows": 12,
+      "mape_percent": 15.074882831032618,
+      "median_ape_percent": 14.129734249549475,
+      "p90_ape_percent": 27.179999125880816,
+      "max_ape_percent": 33.61720071713025,
+      "mean_bias_percent": -14.313232105822124,
+      "rmse_ms": 3.0191763023159766,
+      "p90_coverage": 0.16666666666666666
+    },
+    "mobilenet_v2": {
+      "rows": 3,
+      "mape_percent": 14.244906615363393,
+      "median_ape_percent": 12.901839608940705,
+      "p90_ape_percent": 22.251978411301895,
+      "max_ape_percent": 22.251978411301895,
+      "mean_bias_percent": -14.244906615363393,
+      "rmse_ms": 0.29166084439537704,
+      "p90_coverage": 0.0
+    },
+    "opt": {
+      "rows": 15,
+      "mape_percent": 15.708016571141881,
+      "median_ape_percent": 9.81194780736593,
+      "p90_ape_percent": 44.97158712300482,
+      "max_ape_percent": 47.01548340817658,
+      "mean_bias_percent": 13.638457923768192,
+      "rmse_ms": 19.69011437549417,
+      "p90_coverage": 0.8666666666666667
+    },
+    "qwen2": {
+      "rows": 15,
+      "mape_percent": 5.3876226026514225,
+      "median_ape_percent": 3.427583784548309,
+      "p90_ape_percent": 14.71196407917448,
+      "max_ape_percent": 17.69678400093736,
+      "mean_bias_percent": -4.803447400343517,
+      "rmse_ms": 6.0967219629625005,
+      "p90_coverage": 0.6666666666666666
+    },
+    "resnet18": {
+      "rows": 3,
+      "mape_percent": 21.33844325805275,
+      "median_ape_percent": 19.948963528978094,
+      "p90_ape_percent": 41.480852448090474,
+      "max_ape_percent": 41.480852448090474,
+      "mean_bias_percent": -21.33844325805275,
+      "rmse_ms": 0.273045310987457,
+      "p90_coverage": 0.3333333333333333
+    },
+    "roberta": {
+      "rows": 12,
+      "mape_percent": 15.852190699833175,
+      "median_ape_percent": 15.667306344621739,
+      "p90_ape_percent": 27.21580468562259,
+      "max_ape_percent": 33.94762777486872,
+      "mean_bias_percent": -15.17222956157079,
+      "rmse_ms": 2.9520568427004306,
+      "p90_coverage": 0.16666666666666666
+    },
+    "t5": {
+      "rows": 15,
+      "mape_percent": 10.230665683324752,
+      "median_ape_percent": 10.54765779303515,
+      "p90_ape_percent": 23.22810402894365,
+      "max_ape_percent": 23.520461100818036,
+      "mean_bias_percent": 9.074990149631008,
+      "rmse_ms": 3.30039995015689,
+      "p90_coverage": 0.8
+    },
+    "wav2vec2": {
+      "rows": 3,
+      "mape_percent": 15.714425162324895,
+      "median_ape_percent": 12.199027572590733,
+      "p90_ape_percent": 25.43877879853446,
+      "max_ape_percent": 25.43877879853446,
+      "mean_bias_percent": -15.714425162324895,
+      "rmse_ms": 1.26751146030026,
+      "p90_coverage": 0.0
+    }
+  }
+}

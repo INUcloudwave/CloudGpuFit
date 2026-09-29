@@ -34,9 +34,18 @@ def load_calibration(path: Path) -> dict[str, object]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("mode") != "eager":
         raise ValueError(f"Expected mode='eager' in {path}")
-    if payload.get("method") != "global_conformal_ratio":
-        raise ValueError(f"Unsupported calibration method in {path}")
+    method = payload.get("method")
     factor = float(payload.get("factor", float("nan")))
+    # "uncalibrated_identity" is how a target without Eager E2E P90 data yet
+    # (e.g. g7.2xlarge) says "no P90 correction": allowed only as an exact
+    # identity factor, so it can never scale anything. Median is unaffected.
+    if method == "uncalibrated_identity":
+        if factor != 1.0:
+            raise ValueError(
+                f"uncalibrated_identity requires factor == 1.0 in {path}: {factor}"
+            )
+    elif method != "global_conformal_ratio":
+        raise ValueError(f"Unsupported calibration method in {path}")
     if not math.isfinite(factor) or factor < 1.0:
         raise ValueError(f"Calibration factor must be finite and >= 1.0: {factor}")
     target = float(payload.get("target_coverage", float("nan")))

@@ -11,12 +11,13 @@ from pathlib import Path
 
 
 SCHEMA_VERSION = 2
-PREDICTOR_VERSION = "eager_v4"
+PREDICTOR_VERSION = "eager_v6_first_token_structural"
 DEFAULT_TARGET = "g6.xlarge"
 TARGETS_DIRECTORY = Path("targets")
 DEFAULT_MANIFEST_NAME = "runtime_manifest.json"
 DEFAULT_FACTOR_NAME = "p90_calibration_factor.json"
 DEFAULT_HARDWARE_PROFILE_NAME = "hardware_profile.json"
+DEFAULT_FIRST_TOKEN_CALIBRATION_NAME = "first_token_calibration.json"
 
 MODEL_DIRECTORIES = {
     "cache": Path("cache_model"),
@@ -93,6 +94,13 @@ def discover_artifacts(root: Path, factor_path: Path) -> list[Path]:
     else:
         artifacts.append(hardware_profile)
 
+    # Optional (deviates from the original bundle): a target without a
+    # first_token_calibration.json is not treated as broken -- it simply
+    # runs uncalibrated for decoder_llm/text_encdec first-token predictions.
+    first_token_calibration = root / DEFAULT_FIRST_TOKEN_CALIBRATION_NAME
+    if first_token_calibration.is_file():
+        artifacts.append(first_token_calibration)
+
     if missing or empty_directories:
         lines = ["Cannot build Eager runtime manifest."]
         lines.extend(f"Missing file: {path}" for path in missing)
@@ -138,6 +146,9 @@ def build_manifest(
             "CONV1D_MODEL_DIR": str(MODEL_DIRECTORIES["conv1d"]),
             "EAGER_P90_CALIBRATION_FILE": relative_to_root(factor_path, root),
             "EAGER_HARDWARE_PROFILE": DEFAULT_HARDWARE_PROFILE_NAME,
+            "EAGER_FIRST_TOKEN_CALIBRATION_FILE": (
+                DEFAULT_FIRST_TOKEN_CALIBRATION_NAME
+            ),
         },
         "artifacts": [
             {

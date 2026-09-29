@@ -1,0 +1,15 @@
+Data_Source,Family,Samples
+base,BMM,1028
+base,Conv1d,1983
+base,Conv2d,2480
+base,Linear,3493
+base,SDPA,1016
+cache_supplement,Linear,648
+model_context,Linear,648
+supplement,BMM,286
+supplement,Conv1d,320
+supplement,Conv2d,299
+supplement,DepthwiseConv2d,225
+supplement,Linear,558
+supplement,SDPA,312
+transformer_context,Linear,1884

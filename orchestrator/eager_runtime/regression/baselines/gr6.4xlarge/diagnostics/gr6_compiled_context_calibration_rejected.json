@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "target_instance": "gr6.4xlarge",
+  "engine_mode": "compiled",
+  "calibration_scope": "global_structural_context",
+  "calibration_dataset": "compiled_core",
+  "calibration_rows": 54,
+  "kernel_scale": 0.9749019336841059,
+  "external_launch_ms": 0.010946219486580203,
+  "fusion_launch_ms": 0.0,
+  "fixed_overhead_ms": 0.12643301371227553,
+  "model_specific": false,
+  "model_name_is_feature": false,
+  "holdout_datasets": [
+    "compiled_encoder_seq512",
+    "compiled_longseq"
+  ]
+}

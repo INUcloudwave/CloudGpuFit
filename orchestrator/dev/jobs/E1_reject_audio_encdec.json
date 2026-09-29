@@ -1,0 +1,18 @@
+{
+  "model": "openai/whisper-tiny",
+  "model_config_snapshot": {
+    "model_type": "whisper"
+  },
+  "type": "audio_encdec",
+  "dtype": "fp16",
+  "batch_size": 1,
+  "params": {
+    "audio_samples": 16000
+  },
+  "deployment": {
+    "aws_region": "ap-northeast-2",
+    "budget_usd_per_hour": 10
+  },
+  "warnings": [],
+  "engine_mode": "eager"
+}

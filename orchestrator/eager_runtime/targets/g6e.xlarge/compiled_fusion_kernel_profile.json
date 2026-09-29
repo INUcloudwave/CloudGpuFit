@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "target_instance": "g6e.xlarge",
+  "gpu_name": "NVIDIA L40S",
+  "kernel_floor_ms": 0.0013115,
+  "method": "median_small_single_inductor_kernel_duration",
+  "calibration": {
+    "dataset": "g6e_compiled_fusion_pilot.csv",
+    "dataset_sha256": "cb84396dfc3bb06194d6d37b4c1976c2106bdee2051111688b1dff95d151b6aa",
+    "roofline_threshold_ms": 1e-05,
+    "selected_rows": 5,
+    "selected_patterns": [
+      "add_relu",
+      "bias_gelu",
+      "layernorm",
+      "rmsnorm",
+      "softmax"
+    ],
+    "minimum_ms": 0.0012479999999995,
+    "maximum_ms": 0.0015040000000001
+  }
+}

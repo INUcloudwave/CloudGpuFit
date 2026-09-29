@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "target_instance": "g7e.2xlarge",
+  "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "kernel_floor_ms": 0.0010880000000001,
+  "method": "median_small_single_inductor_kernel_duration",
+  "calibration": {
+    "dataset": "g7e_compiled_fusion_pilot.csv",
+    "dataset_sha256": "5f78997f3e5882729e1f3151301291c2384891efd23bc14ca90ea336349cfe1f",
+    "roofline_threshold_ms": 1e-05,
+    "selected_rows": 5,
+    "selected_patterns": [
+      "add_relu",
+      "bias_gelu",
+      "layernorm",
+      "rmsnorm",
+      "softmax"
+    ],
+    "minimum_ms": 0.0009919999999999,
+    "maximum_ms": 0.001248
+  }
+}

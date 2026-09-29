@@ -1,0 +1,19 @@
+{
+  "target_instance": "g7e.2xlarge",
+  "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "base": "compiled_validation_data/compiled_core.csv",
+  "measurements": "results/g7e_compiled_components_core_fast/compiled_component_cases.csv",
+  "output": "/home/ubuntu/g7e_eager_collection/targets/g7e.2xlarge/compiled_validation_data/compiled_core.csv",
+  "rows": 54,
+  "successful_rows": 54,
+  "models": [
+    "bert",
+    "mobilenet_v2",
+    "opt",
+    "qwen2",
+    "resnet18",
+    "roberta",
+    "t5",
+    "wav2vec2"
+  ]
+}

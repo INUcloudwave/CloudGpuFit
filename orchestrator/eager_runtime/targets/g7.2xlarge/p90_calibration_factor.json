@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mode": "eager",
+  "method": "uncalibrated_identity",
+  "target_coverage": 0.9,
+  "factor": 1.0,
+  "factor_floor": 1.0,
+  "calibration_rows": 0,
+  "application": "calibrated_p90_ms = existing_predicted_p90_ms * factor",
+  "important": "Temporary identity factor until G7 Eager E2E calibration. Median prediction is unaffected."
+}

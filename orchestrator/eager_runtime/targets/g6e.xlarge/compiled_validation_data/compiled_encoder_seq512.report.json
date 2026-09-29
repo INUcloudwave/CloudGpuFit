@@ -1,0 +1,13 @@
+{
+  "target_instance": "g6e.xlarge",
+  "gpu_name": "NVIDIA L40S",
+  "base": "compiled_validation_data/compiled_encoder_seq512.csv",
+  "measurements": "results/g6e_compiled_components_holdout_fast/compiled_component_cases.csv",
+  "output": "/home/ubuntu/g6e_compiled_fusion/targets/g6e.xlarge/compiled_validation_data/compiled_encoder_seq512.csv",
+  "rows": 6,
+  "successful_rows": 6,
+  "models": [
+    "bert",
+    "roberta"
+  ]
+}

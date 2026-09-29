@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "instance_type": "gr6.4xlarge",
+  "gpu_family": "g6",
+  "vcpu": 16,
+  "ram_gib": null,
+  "spec_source": {
+    "vcpu": "CloudGPUFit instance_filter.SUPPORTED_GPU_INSTANCES (EC2 DescribeInstanceTypes)",
+    "ram_gib": "not recorded yet - fill from EC2 DescribeInstanceTypes"
+  },
+  "overheads": {
+    "t_h2d_base": 0.001951047447678711,
+    "t_d2h_base": 0.001499852192397455,
+    "bw_h2d_GBs": 13.472199014143822,
+    "bw_d2h_GBs": 13.21723242892465,
+    "t_dispatch_light": 0.006206739999470301,
+    "t_dispatch_heavy": 0.02085896999972192,
+    "t_sync": 0.0038811480000049414,
+    "t_python_loop": 5.6593300001850366e-05
+  },
+  "compiled_context_calibration": null,
+  "calibration_files": {
+    "p90_calibration_factor": "inherit_base",
+    "first_token_calibration": "inherit_base"
+  },
+  "provenance": {
+    "status": "measured",
+    "source": "gr6_compiled_final_checkpoint_20260929: host/transfer/dispatch overheads measured on gr6.4xlarge; GPU kernel models reused from g6.xlarge"
+  },
+  "compiled_context_calibration_note": "Intentionally null. The gr6 compiled context calibration worsened validation error and was rejected; it must not be used or regenerated. Kept for diagnosis only at regression/baselines/gr6.4xlarge/diagnostics/.",
+  "role": "size"
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "gpu_family": "g7",
+  "gpu_name": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "gpu_base_target": "g7.2xlarge",
+  "description": "GPU kernel-time models (NVIDIA RTX PRO 4500 Blackwell Server Edition) shared by every g7 size; only host-side overheads differ per size."
+}

@@ -49,18 +49,44 @@ uvicorn main:app --port 8000
 2. **인스턴스 후보 필터링** — `instance_catalog.load_instance_catalog()`가
    `aws_pricing.py`로 해당 리전의 AWS 가격을 실시간 조회(Bulk Price List API,
    자격증명 불필요, 디스크에 리전별 TTL 캐시)한 뒤, `instance_filter.py`가 VRAM·
-   리전·예산·설치된 eager_runtime 프로파일 조건으로 후보를 추린다.
-3. **Runtime(지연시간/처리량) 예측** — `runtime_adapter.py`가 후보마다
-   `eager_runtime.predict_runtime_targets()`를 호출해 median/P90 지연시간과
-   (나이브 추정) 처리량을 예측한다. `eager_runtime/` 자체의 아티팩트 구조·CLI
-   사용법은 [`eager_runtime/README_TARGETS.md`](eager_runtime/README_TARGETS.md)
-   참고.
+   리전·예산 조건과 **eager_runtime에 자기 target이 있는 인스턴스** 조건으로 후보를
+   추린다. 현재 7개: g4dn.xlarge, g5.xlarge, g6.xlarge, g6e.xlarge, g7.2xlarge,
+   g7e.2xlarge, gr6.4xlarge. 측정하지 않은 크기(2xlarge~16xlarge 등)는 다른
+   인스턴스 결과를 빌리거나 vCPU 배율로 추정해 보여주지 않는다 — 이들은
+   `SUPPORTED_GPU_INSTANCES`(26개: 기존 목록에서 g5g 제외, g7.2xlarge 추가)에 남아 있고, 자기
+   target(`eager_runtime/targets/<instance>/`, 실측 또는 `size_profiles/` +
+   `build_size_target.py`로 생성)이 추가되는 순간 코드 수정 없이 후보가 된다.
+   가격은 `aws_pricing.py`가 이 26개에 대해 조회한다. 목록에 인스턴스를 새로 넣었다면
+   `.aws_pricing_cache/`를 지워야 TTL(24시간)을 기다리지 않고 바로 반영된다.
+3. **Runtime(지연시간/처리량) 예측** — `runtime_adapter.py`가 후보들에 대해
+   `eager_runtime.predict_runtime_targets()`를 job의 `engine_mode`(`"eager"` 기본,
+   `"compiled"`)로 호출해 median/P90 지연시간과 (나이브 추정) 처리량을 예측한다.
+   지원 워크로드: decoder_llm, text_encdec, vision_cls, audio_encoder(Wav2Vec2 계열).
+   audio_encoder는 VRAM 예측(`predict_vram.py`)과 웹 폼 지원이 함께 필요하다.
+   `eager_runtime/`의 구조·CLI는
+   [`eager_runtime/README_TARGETS.md`](eager_runtime/README_TARGETS.md) 참고.
+   `eager_runtime`은 transformers==4.45.1 환경에서 보정됐다(버전이 다르면 예측값이 달라짐).
 
 이 결과(`vram`/`candidates`/`runtime`)를 그대로 `GET /jobs/{id}`가 반환한다. SLO
 충족 판정과 중요도 기반 순위 매기기는 이 서버가 아니라 `web/lib/slo.ts`·
 `web/lib/ranking.ts`(순수 함수, 브라우저에서 계산)에서 이루어진다 — `PATCH
 /jobs/{id}/slo`는 사용자가 입력한 허용 기준을 저장만 할 뿐, 재계산이나 캐시 키에
 영향을 주지 않는다.
+
+## 개발용 테스트 (`dev/`, 서비스 코드는 import하지 않음)
+
+`orchestrator/`에서 실행한다.
+
+| 명령 | 내용 |
+|---|---|
+| `python dev/logic_test.py` | 후보 필터·어댑터·파라미터·캐시 키 로직 (가짜 eager_runtime, 1초) |
+| `python dev/api_smoke.py --quick` | 실제 FastAPI 앱으로 `POST /jobs`→`GET /jobs/{id}` 스모크 (xMem·가격·DB만 테스트용으로 대체) |
+| `python dev/api_smoke.py` | 위를 4개 워크로드 × Eager/Compiled로 |
+| `python dev/predict_from_file.py dev/requests/opt_decoder.json` | 요청 JSON 하나로 예측해 인스턴스별 표 출력 |
+| `python dev/send_jobs.py` | **실행 중인 서버**(`uvicorn main:app --port 8000`, xMem 컨테이너 필요)에 `dev/jobs/*.json`을 실제로 보내 VRAM·후보·예측 요약 출력. `E*` 파일은 400 거절이 정상 |
+| `python eager_runtime/regression/run_regression.py` | eager_runtime 회귀 테스트 (`--full`은 공식 E2E 재현, 1시간 안팎) |
+
+테스트의 VRAM 값과 가격 없는 카탈로그는 로직 확인용 입력이며 실제 데이터가 아니다.
 
 ## 설계 메모
 

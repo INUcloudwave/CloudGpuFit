@@ -24,6 +24,31 @@ class HostScheduleSimulatorRouter(v8.FidelitySimulatorRouter):
             self.host_schedule_policy,
         )
 
+    def simulate_fx_graph(
+        self,
+        fused_graph,
+        batch_size,
+        prediction_mode="median",
+    ):
+        metadata = next(
+            (
+                item
+                for item in fused_graph
+                if item.get("type") == "WorkloadMetadata"
+            ),
+            {},
+        )
+        total_ms, log_df = super().simulate_fx_graph(
+            fused_graph,
+            batch_size,
+            prediction_mode,
+        )
+        log_df.attrs["workload_family"] = metadata.get("family", "unknown")
+        log_df.attrs["input_batch_size"] = int(
+            metadata.get("batch_size", batch_size)
+        )
+        return total_ms, log_df
+
     def _schedule_scale(self, log_df):
         if self.engine_mode != "eager":
             return 1.0
@@ -43,28 +68,50 @@ class HostScheduleSimulatorRouter(v8.FidelitySimulatorRouter):
         log_df.attrs["host_schedule_applied"] = int(scale != 1.0)
 
         if scale == 1.0:
-            return super().simulate_e2e_pipeline(
+            total_ms, timeline = super().simulate_e2e_pipeline(
                 log_df, input_bytes, output_bytes
             )
-
-        original = (
-            self.t_dispatch_light,
-            self.t_dispatch_heavy,
-            self.t_python_loop,
-        )
-        try:
-            self.t_dispatch_light *= scale
-            self.t_dispatch_heavy *= scale
-            self.t_python_loop *= scale
-            return super().simulate_e2e_pipeline(
-                log_df, input_bytes, output_bytes
-            )
-        finally:
-            (
+        else:
+            original = (
                 self.t_dispatch_light,
                 self.t_dispatch_heavy,
                 self.t_python_loop,
-            ) = original
+            )
+            try:
+                self.t_dispatch_light *= scale
+                self.t_dispatch_heavy *= scale
+                self.t_python_loop *= scale
+                total_ms, timeline = super().simulate_e2e_pipeline(
+                    log_df, input_bytes, output_bytes
+                )
+            finally:
+                (
+                    self.t_dispatch_light,
+                    self.t_dispatch_heavy,
+                    self.t_python_loop,
+                ) = original
+
+        kernel_sum_ms = float(log_df["Predicted_Actual_ms"].sum())
+        workload_family = log_df.attrs.get("workload_family", "unknown")
+        input_batch_size = int(log_df.attrs.get("input_batch_size", 1))
+        additive_ms = float(
+            getattr(self, "text_small_workload_additive_ms", 0.0)
+        )
+        threshold_ms = float(
+            getattr(self, "text_small_workload_kernel_threshold_ms", 0.0)
+        )
+        max_batch = int(getattr(self, "text_small_workload_max_batch", 1))
+        apply_text_correction = (
+            workload_family == "text"
+            and input_batch_size <= max_batch
+            and threshold_ms > 0.0
+            and kernel_sum_ms < threshold_ms
+            and additive_ms > 0.0
+        )
+        correction_ms = additive_ms if apply_text_correction else 0.0
+        log_df.attrs["text_small_workload_correction_ms"] = correction_ms
+        log_df.attrs["workload_family"] = workload_family
+        return total_ms + correction_ms, timeline
 
 
 def build_prediction_breakdown(
@@ -100,6 +147,10 @@ def build_prediction_breakdown(
     )
     record["host_schedule_applied"] = int(
         log_df.attrs.get("host_schedule_applied", 0)
+    )
+    record["workload_family"] = log_df.attrs.get("workload_family", "unknown")
+    record["text_small_workload_correction_ms"] = float(
+        log_df.attrs.get("text_small_workload_correction_ms", 0.0)
     )
     return record
 

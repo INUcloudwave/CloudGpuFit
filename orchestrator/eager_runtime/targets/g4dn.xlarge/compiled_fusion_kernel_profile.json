@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "target_instance": "g4dn.xlarge",
+  "gpu_name": "Tesla T4",
+  "kernel_floor_ms": 0.0013760000000002,
+  "method": "median_small_single_inductor_kernel_duration",
+  "calibration": {
+    "dataset": "g4dn_compiled_fusion_pilot.csv",
+    "dataset_sha256": "a94667e97b161fe9c4327ea5ff91b16d7edc045e7ac68796ca03e8c87ba2e997",
+    "roofline_threshold_ms": 1e-05,
+    "selected_rows": 5,
+    "selected_patterns": [
+      "add_relu",
+      "bias_gelu",
+      "layernorm",
+      "rmsnorm",
+      "softmax"
+    ],
+    "minimum_ms": 0.0012479999999998,
+    "maximum_ms": 0.0016319999999996
+  }
+}

@@ -13,8 +13,12 @@
   "t_dispatch_light": 0.00645,
   "t_dispatch_heavy": 0.02002,
   "t_sync": 0.00386,
-  "t_python_loop": 0.00006,
+  "t_python_loop": 6e-05,
   "t_pytorch_overhead": 0.0,
   "host_schedule_scale": 2.4,
-  "host_schedule_policy": "vision_conv2d"
+  "host_schedule_policy": "vision_conv2d",
+  "t5_first_token_fidelity_ms": 7.7669,
+  "text_small_workload_additive_ms": 1.401708179021689,
+  "text_small_workload_kernel_threshold_ms": 7.0,
+  "text_small_workload_max_batch": 8
 }

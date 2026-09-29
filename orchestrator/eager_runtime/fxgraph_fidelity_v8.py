@@ -32,16 +32,30 @@ def _first_tensor(value):
     return None
 
 
-def _sequence_length(dummy_input):
-    if isinstance(dummy_input, dict):
-        tensor = dummy_input.get("input_ids")
-        if tensor is None:
-            tensor = _first_tensor(dummy_input)
-    else:
-        tensor = _first_tensor(dummy_input)
+def _tensor_sequence_length(tensor):
     if tensor is None or tensor.ndim < 2:
         return 1
     return int(tensor.shape[1])
+
+
+def _input_metadata(dummy_input):
+    first = _first_tensor(dummy_input)
+    batch_size = int(first.shape[0]) if first is not None and first.ndim else 1
+    if not isinstance(dummy_input, dict):
+        return {
+            "batch_size": batch_size,
+            "encoder_sequence_length": _tensor_sequence_length(first),
+            "decoder_sequence_length": 0,
+        }
+    return {
+        "batch_size": batch_size,
+        "encoder_sequence_length": _tensor_sequence_length(
+            dummy_input.get("input_ids")
+        ),
+        "decoder_sequence_length": _tensor_sequence_length(
+            dummy_input.get("decoder_input_ids")
+        ) if dummy_input.get("decoder_input_ids") is not None else 0,
+    }
 
 
 def _block_count(module_names, stack):
@@ -82,10 +96,13 @@ def _t5_metadata(gm, dummy_input):
     if parameter is not None:
         precision_bytes = int(parameter.element_size())
 
+    input_metadata = _input_metadata(dummy_input)
     return {
         "type": "FidelityMetadata",
         "family": "t5",
-        "sequence_length": _sequence_length(dummy_input),
+        "sequence_length": input_metadata["encoder_sequence_length"],
+        "encoder_sequence_length": input_metadata["encoder_sequence_length"],
+        "decoder_sequence_length": input_metadata["decoder_sequence_length"],
         "hidden_size": hidden_size,
         "encoder_layers": encoder_layers,
         "decoder_layers": decoder_layers,
@@ -98,14 +115,39 @@ class FidelityFXGraphParser(v7.PointwiseContextFXGraphParser):
     def extract_nodes(self, gm, dummy_input, engine_mode="eager"):
         fused_graph = super().extract_nodes(gm, dummy_input, engine_mode)
         metadata = _t5_metadata(gm, dummy_input)
+        base_nodes = [
+            item["base_op"]
+            for item in fused_graph
+            if item.get("type") == "FusionGroup"
+        ]
+        layer_types = {item.get("type") for item in base_nodes}
+        if metadata is not None:
+            workload_family = "text_encdec"
+        elif "Embedding" in layer_types and not layer_types.intersection(
+            {"Conv1d", "Conv2d"}
+        ):
+            workload_family = "text"
+        elif "Conv2d" in layer_types:
+            workload_family = "vision"
+        elif "Conv1d" in layer_types:
+            workload_family = "audio"
+        else:
+            workload_family = "unknown"
+        workload_metadata = {
+            "type": "WorkloadMetadata",
+            "family": workload_family,
+            **_input_metadata(dummy_input),
+        }
         if metadata is not None:
             print(
                 "  T5 fidelity metadata: "
                 f"guards={metadata['guard_count']}, "
-                f"sequence={metadata['sequence_length']}, "
+                f"encoder_sequence={metadata['encoder_sequence_length']}, "
+                f"decoder_sequence={metadata['decoder_sequence_length']}, "
                 f"hidden={metadata['hidden_size']}"
             )
             fused_graph.append(metadata)
+        fused_graph.append(workload_metadata)
         return fused_graph
 
 
@@ -127,7 +169,7 @@ class FidelitySimulatorRouter(v7.PointwiseContextSimulatorRouter):
         graph = [
             item
             for item in fused_graph
-            if item.get("type") != "FidelityMetadata"
+            if item.get("type") not in {"FidelityMetadata", "WorkloadMetadata"}
         ]
         total_ms, log_df = super().simulate_fx_graph(
             graph,
@@ -141,6 +183,9 @@ class FidelitySimulatorRouter(v7.PointwiseContextSimulatorRouter):
             "fidelity_guard_cpu_ms": 0.0,
             "fidelity_guard_count": 0,
             "fidelity_sequence_length": 0,
+            "fidelity_encoder_sequence_length": 0,
+            "fidelity_decoder_sequence_length": 0,
+            "fidelity_mode": "none",
         }
         if metadata is not None and metadata["family"] == "t5":
             correction = self._t5_fidelity_correction(
@@ -156,6 +201,8 @@ class FidelitySimulatorRouter(v7.PointwiseContextSimulatorRouter):
         reference_guards = 30.0
         guard_scale = guard_count / reference_guards
         sequence_length = metadata["sequence_length"]
+        encoder_sequence_length = metadata["encoder_sequence_length"]
+        decoder_sequence_length = metadata["decoder_sequence_length"]
         hidden_size = metadata["hidden_size"]
         precision_bytes = metadata["precision_bytes"]
 
@@ -179,8 +226,19 @@ class FidelitySimulatorRouter(v7.PointwiseContextSimulatorRouter):
             launch_floor_ms,
             guard_bytes / self.peak_bandwidth * 1000.0,
         )
-        guard_cpu_ms = cpu_floor_ms * guard_scale
+        first_token_fidelity_ms = float(
+            getattr(self, "t5_first_token_fidelity_ms", 0.0)
+        )
+        is_first_token = decoder_sequence_length == 1
+        if is_first_token and first_token_fidelity_ms > 0.0:
+            guard_cpu_ms = first_token_fidelity_ms * guard_scale
+            fidelity_mode = "t5_first_token"
+        else:
+            guard_cpu_ms = cpu_floor_ms * guard_scale
+            fidelity_mode = "t5_legacy"
         if (
+            not is_first_token
+            and
             batch_size > 1
             and fx_kernel_ms < overlap_threshold_ms * guard_scale
         ):
@@ -192,6 +250,9 @@ class FidelitySimulatorRouter(v7.PointwiseContextSimulatorRouter):
             "fidelity_guard_cpu_ms": guard_cpu_ms,
             "fidelity_guard_count": guard_count,
             "fidelity_sequence_length": sequence_length,
+            "fidelity_encoder_sequence_length": encoder_sequence_length,
+            "fidelity_decoder_sequence_length": decoder_sequence_length,
+            "fidelity_mode": fidelity_mode,
         }
 
     def simulate_e2e_pipeline(self, log_df, input_bytes, output_bytes):
@@ -214,6 +275,9 @@ def build_prediction_breakdown(*args, **kwargs):
         "fidelity_guard_cpu_ms",
         "fidelity_guard_count",
         "fidelity_sequence_length",
+        "fidelity_encoder_sequence_length",
+        "fidelity_decoder_sequence_length",
+        "fidelity_mode",
     ):
         record[name] = log_df.attrs.get(name, 0.0)
     return record

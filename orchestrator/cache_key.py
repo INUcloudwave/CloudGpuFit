@@ -39,7 +39,15 @@ VRAM_PREDICTOR_VERSION = "1"
 # create_job() for the same reason (every job re-runs the full pipeline), so
 # this version number is currently inert, but keep bumping it on adapter
 # changes anyway in case caching is ever turned back on.
-RUNTIME_PIPELINE_VERSION = "2"
+# "3": engine_mode became a real request field (Compiled/Inductor predictor
+# added), and eager_runtime_manifest_fingerprint()'s output string shape
+# changed (now includes the manifest filename, and covers each target's
+# Compiled manifests too, not just runtime_manifest.json) -- both change
+# what a cache-hit would represent, so bump even though caching is inert.
+# "4": candidates are only instances with their own target (the 25-size vCPU
+# proxy and latency_scale_for_vcpu are gone), audio_encoder accepted, and
+# compiled_context_calibration.json is fingerprinted.
+RUNTIME_PIPELINE_VERSION = "4"
 
 
 def eager_runtime_manifest_fingerprint(eager_runtime_root: Path) -> str:
@@ -50,13 +58,28 @@ def eager_runtime_manifest_fingerprint(eager_runtime_root: Path) -> str:
     if not targets_root.is_dir():
         return "no-targets"
 
+    # Eager manifests (targets/<instance>/runtime_manifest.json) plus, when
+    # present, each target's Compiled manifests -- so a Compiled-mode job's
+    # cache key also changes if its LightGBM external/fusion models are
+    # retrained, exactly like the pre-existing Eager-only coverage below.
+    # compiled_context_calibration.json (g7, g7e) is not referenced by any
+    # manifest, so it has to be hashed here explicitly or a recalibration
+    # would leave old cached Compiled results valid.
+    manifest_globs = (
+        "*/runtime_manifest.json",
+        "*/compiled_external_model/compiled_external_manifest.json",
+        "*/compiled_fusion_model/compiled_fusion_manifest.json",
+        "*/compiled_context_calibration.json",
+    )
     fingerprints = []
-    for manifest_path in sorted(targets_root.glob("*/runtime_manifest.json")):
-        try:
-            digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()[:16]
-        except OSError:
-            digest = "unreadable"
-        fingerprints.append(f"{manifest_path.parent.name}:{digest}")
+    for pattern in manifest_globs:
+        for manifest_path in sorted(targets_root.glob(pattern)):
+            try:
+                digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()[:16]
+            except OSError:
+                digest = "unreadable"
+            relative = manifest_path.relative_to(targets_root).as_posix()
+            fingerprints.append(f"{relative}:{digest}")
     return ",".join(fingerprints) or "no-manifests"
 
 
@@ -82,6 +105,10 @@ def pipeline_cache_key_for(
         # but folded in again explicitly so a config change is never missed
         # even if that copy step changes later.
         "model_config_snapshot": payload.get("model_config_snapshot"),
+        # Eager vs. Compiled predicts a genuinely different result for the
+        # same inputs -- folded in explicitly rather than assuming xmem_args
+        # or the other payload fields above happen to change too.
+        "engine_mode": payload.get("engine_mode") or "eager",
     }
     return hashlib.sha256(
         json.dumps(material, sort_keys=True, default=str).encode("utf-8")

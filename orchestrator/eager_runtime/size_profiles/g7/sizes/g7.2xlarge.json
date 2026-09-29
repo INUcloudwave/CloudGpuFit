@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "instance_type": "g7.2xlarge",
+  "gpu_family": "g7",
+  "vcpu": 8,
+  "ram_gib": 32,
+  "spec_source": {
+    "vcpu": "AWS product page https://aws.amazon.com/ec2/instance-types/g7/",
+    "ram_gib": "AWS product page https://aws.amazon.com/ec2/instance-types/g7/"
+  },
+  "overheads": {
+    "t_h2d_base": 0.011901922127888431,
+    "t_d2h_base": 0.0010955610331540022,
+    "bw_h2d_GBs": 56.80634489740259,
+    "bw_d2h_GBs": 57.423376146921186,
+    "t_dispatch_light": 0.006532259999971757,
+    "t_dispatch_heavy": 0.00968841999963388,
+    "t_sync": 0.002947941999991599,
+    "t_python_loop": 3.6884999997255366e-05
+  },
+  "compiled_context_calibration": {
+    "kernel_scale": 1.0267987605925104,
+    "external_launch_ms": 0.00401812269858878,
+    "fusion_launch_ms": 0.0,
+    "fixed_overhead_ms": 0.3194684646976781,
+    "source": "targets/g7.2xlarge/compiled_context_calibration.json (model-independent, calibrated on compiled_core)"
+  },
+  "calibration_files": {
+    "p90_calibration_factor": "inherit_base",
+    "first_token_calibration": "inherit_base"
+  },
+  "provenance": {
+    "status": "measured",
+    "source": "targets/g7.2xlarge/hardware_profile.json (directly calibrated base target)"
+  },
+  "role": "gpu_base"
+}

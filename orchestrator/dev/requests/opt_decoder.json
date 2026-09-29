@@ -1,0 +1,16 @@
+{
+  "model": "facebook/opt-125m",
+  "type": "decoder_llm",
+  "model_config_preset": "opt",
+  "dtype": "fp16",
+  "batch_size": 8,
+  "params": {
+    "mode": "prefill",
+    "seq_len": 256
+  },
+  "engine_mode": "both",
+  "vram_required_gb": 2.0,
+  "aws_region": "ap-northeast-2",
+  "budget_usd_per_hour": null,
+  "instances": "all"
+}

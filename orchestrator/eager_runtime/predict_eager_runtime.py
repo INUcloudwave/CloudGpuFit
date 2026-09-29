@@ -19,12 +19,19 @@ if str(_MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODULE_ROOT))
 
 import torch
-from transformers import AutoConfig, AutoModel, AutoModelForImageClassification
+from transformers import (
+    AutoConfig,
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoModelForImageClassification,
+    AutoModelForSeq2SeqLM,
+)
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
 import fxgraph_conv1d_v10 as v10
 import fxgraph_eager_final as final
 import run_eager_local as local
+from first_token_models import restrict_causal_lm_to_last_token
 from runtime_manifest import (
     DEFAULT_TARGET,
     load_manifest,
@@ -35,6 +42,8 @@ from runtime_manifest import (
 
 RUNTIME_ROOT = _MODULE_ROOT
 SUPPORTED_BATCH_SIZES = {1, 8, 16, 32, 64, 128}
+CALIBRATED_MIN_SEQUENCE_LENGTH = 64
+CALIBRATED_MAX_SEQUENCE_LENGTH = 1024
 TOKEN_BYTES = 4
 AUDIO_SAMPLES_PER_CHUNK = 30 * 16000
 _RUNTIME_LOCK = RLock()
@@ -44,7 +53,80 @@ _TARGET_ENVIRONMENT_NAMES = {
     "EAGER_P90_CALIBRATION_ACTIVE",
     "EAGER_HOST_SCHEDULE_SCALE",
     "EAGER_HOST_SCHEDULE_POLICY",
+    "EAGER_FIRST_TOKEN_CALIBRATION_FILE",
 }
+
+
+def load_first_token_calibration() -> dict[str, Any]:
+    path_value = os.environ.get("EAGER_FIRST_TOKEN_CALIBRATION_FILE")
+    if not path_value:
+        return {"rules": []}
+    path = Path(path_value)
+    if not path.is_file():
+        return {"rules": []}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError(f"Unsupported first-token calibration schema: {path}")
+    if payload.get("mode") != "eager" or payload.get("scope") != "first_token_logits":
+        raise ValueError(f"Invalid first-token calibration scope: {path}")
+    return payload
+
+
+def apply_first_token_calibration(
+    raw_ms: float,
+    workload_type: str,
+    normalized: Mapping[str, int],
+    breakdown: Mapping[str, Any],
+) -> tuple[float, dict[str, Any]]:
+    payload = load_first_token_calibration()
+    batch_size = int(normalized["batch_size"])
+    sequence_length = int(
+        normalized.get("seq_len", normalized.get("encoder_seq_len", 1))
+    )
+    lm_head_ms = float(breakdown.get("lm_head_ms", 0.0))
+
+    for rule in payload.get("rules", []):
+        if str(rule.get("workload_type", "")) != workload_type:
+            continue
+        if lm_head_ms < float(rule.get("min_lm_head_ms", 0.0)):
+            continue
+
+        method = str(rule["method"])
+        scale = float(rule.get("scale", 1.0))
+        intercept_ms = float(rule.get("intercept_ms", 0.0))
+        if method == "scale":
+            corrected_ms = raw_ms * scale
+        elif method == "affine":
+            corrected_ms = raw_ms * scale + intercept_ms
+        else:
+            raise ValueError(f"Unsupported first-token calibration method: {method}")
+        return corrected_ms, {
+            "applied": True,
+            "profile": str(rule["name"]),
+            "method": method,
+            "scale": scale,
+            "intercept_ms": intercept_ms,
+            "extrapolated": (
+                batch_size not in rule.get("calibrated_batch_sizes", [])
+                or sequence_length
+                < int(rule.get("min_calibrated_sequence_length", sequence_length))
+                or sequence_length
+                > int(rule.get("max_calibrated_sequence_length", sequence_length))
+            ),
+            "holdout_mape_percent": float(
+                rule.get("holdout_mape_percent", float("nan"))
+            ),
+        }
+
+    return raw_ms, {
+        "applied": False,
+        "profile": "none",
+        "method": "none",
+        "scale": 1.0,
+        "intercept_ms": 0.0,
+        "extrapolated": False,
+        "holdout_mape_percent": float("nan"),
+    }
 
 
 def available_targets(runtime_root: str | Path | None = None) -> list[str]:
@@ -222,6 +304,23 @@ def decoder_input(
     }
 
 
+def first_decoder_input(
+    batch_size: int,
+    encoder_sequence: int,
+    vocab_size: int,
+    decoder_start_token_id: int,
+) -> dict[str, torch.Tensor]:
+    return {
+        "input_ids": token_input(batch_size, encoder_sequence, vocab_size)["input_ids"],
+        "decoder_input_ids": torch.full(
+            (batch_size, 1),
+            decoder_start_token_id,
+            dtype=torch.long,
+            device=local.ANALYSIS_DEVICE,
+        ),
+    }
+
+
 def audio_output_length(config: Any, input_samples: int) -> int:
     strides = getattr(config, "conv_stride", None)
     if not isinstance(strides, (list, tuple)) or not strides:
@@ -280,43 +379,103 @@ def build_dynamic_model_config(
         hidden_size = config_int(config, "hidden_size", "d_model", "n_embd")
         sequence = positive_int(params.get("seq_len", 128), "params.seq_len")
         normalized["seq_len"] = sequence
-        if sequence != 128:
-            warnings.append("seq_len differs from the validated value 128")
-        model_factory = lambda: base_model
+        if not (
+            CALIBRATED_MIN_SEQUENCE_LENGTH
+            <= sequence
+            <= CALIBRATED_MAX_SEQUENCE_LENGTH
+        ):
+            warnings.append(
+                "seq_len is supported but outside the measured range 64-256; "
+                "this is an extrapolated prediction and accuracy is not guaranteed"
+            )
+        max_positions = getattr(config, "max_position_embeddings", None)
+        if max_positions is not None and sequence > int(max_positions):
+            raise ValueError(
+                f"params.seq_len={sequence} exceeds the model limit "
+                f"max_position_embeddings={int(max_positions)}"
+            )
+        if workload_type == "decoder_llm":
+            with torch.device(local.ANALYSIS_DEVICE):
+                causal_model = AutoModelForCausalLM.from_config(
+                    config,
+                    trust_remote_code=False,
+                ).half()
+                causal_model = restrict_causal_lm_to_last_token(causal_model)
+            model_factory = lambda: causal_model
+            warnings.append(
+                "decoder_llm predicts prompt processing plus an LM head over only "
+                "the final hidden-state position; "
+                "autoregressive decode repetition is not included"
+            )
+        else:
+            model_factory = lambda: base_model
         dummy_fn = lambda bs: token_input(bs, sequence, vocab_size)
-        bytes_fn = lambda bs, precision: (
-            bs * sequence * TOKEN_BYTES,
-            bs * sequence * hidden_size * precision,
-        )
+        if workload_type == "decoder_llm":
+            bytes_fn = lambda bs, precision: (
+                bs * sequence * TOKEN_BYTES,
+                bs * vocab_size * precision,
+            )
+        else:
+            bytes_fn = lambda bs, precision: (
+                bs * sequence * TOKEN_BYTES,
+                bs * sequence * hidden_size * precision,
+            )
     elif workload_type == "text_encdec":
         vocab_size = config_int(config, "vocab_size", default=32000)
-        hidden_size = config_int(config, "hidden_size", "d_model", "n_embd")
         encoder_sequence = positive_int(
             params.get("encoder_seq_len", params.get("seq_len", 128)),
             "params.encoder_seq_len",
         )
         decoder_sequence = positive_int(
-            params.get("decoder_seq_len", 128),
+            params.get("decoder_seq_len", 1),
             "params.decoder_seq_len",
         )
         normalized.update(
             encoder_seq_len=encoder_sequence,
             decoder_seq_len=decoder_sequence,
         )
-        if encoder_sequence != 128 or decoder_sequence != 128:
+        if not (
+            CALIBRATED_MIN_SEQUENCE_LENGTH
+            <= encoder_sequence
+            <= CALIBRATED_MAX_SEQUENCE_LENGTH
+        ):
             warnings.append(
-                "encoder_seq_len or decoder_seq_len differs from the validated value 128"
+                "encoder_seq_len is supported but outside the measured range "
+                "64-256; this is an extrapolated prediction and accuracy is "
+                "not guaranteed"
             )
-        model_factory = lambda: base_model
-        dummy_fn = lambda bs: decoder_input(
-            bs,
-            encoder_sequence,
-            decoder_sequence,
-            vocab_size,
-        )
+        if decoder_sequence != 1:
+            warnings.append(
+                "decoder_seq_len > 1 predicts teacher-forced decoder logits, "
+                "not first-token latency"
+            )
+        decoder_start_token_id = getattr(config, "decoder_start_token_id", None)
+        if decoder_start_token_id is None:
+            decoder_start_token_id = getattr(config, "pad_token_id", 0)
+        decoder_start_token_id = int(decoder_start_token_id or 0)
+        with torch.device(local.ANALYSIS_DEVICE):
+            seq2seq_model = AutoModelForSeq2SeqLM.from_config(
+                config,
+                trust_remote_code=False,
+            ).half()
+        model_factory = lambda: seq2seq_model
+        if decoder_sequence == 1:
+            dummy_fn = lambda bs: first_decoder_input(
+                bs,
+                encoder_sequence,
+                vocab_size,
+                decoder_start_token_id,
+            )
+        else:
+            dummy_fn = lambda bs: decoder_input(
+                bs,
+                encoder_sequence,
+                decoder_sequence,
+                vocab_size,
+            )
         bytes_fn = lambda bs, precision: (
             bs * (encoder_sequence + decoder_sequence) * TOKEN_BYTES,
-            bs * decoder_sequence * hidden_size * precision,
+            bs * decoder_sequence * vocab_size * precision,
         )
     elif workload_type == "audio_encoder":
         hidden_size = config_int(config, "hidden_size", "d_model")
@@ -418,7 +577,32 @@ def _predict_or_raise(
     row = json_safe(rows[0])
     row["model"] = model_id
     hf_model_type = str(runtime_config["hf_model_type"])
-    predicted_median_ms = float(row["predicted_e2e_ms"])
+    raw_predicted_median_ms = float(row["predicted_e2e_ms"])
+    predicted_median_ms, first_token_calibration = apply_first_token_calibration(
+        raw_predicted_median_ms,
+        workload_type=workload_type,
+        normalized=normalized,
+        breakdown=row,
+    )
+    if first_token_calibration["extrapolated"]:
+        warnings.append(
+            "the structural first-token correction is extrapolated beyond its "
+            "measured batch/sequence range"
+        )
+    row["raw_predicted_e2e_ms"] = raw_predicted_median_ms
+    row["calibrated_predicted_e2e_ms"] = predicted_median_ms
+    row["first_token_calibration_applied"] = int(
+        first_token_calibration["applied"]
+    )
+    row["first_token_calibration_profile"] = first_token_calibration["profile"]
+    row["first_token_calibration_method"] = first_token_calibration["method"]
+    row["first_token_calibration_scale"] = first_token_calibration["scale"]
+    row["first_token_calibration_intercept_ms"] = first_token_calibration[
+        "intercept_ms"
+    ]
+    row["first_token_calibration_extrapolated"] = int(
+        first_token_calibration["extrapolated"]
+    )
 
     # TODO(throughput): naive single-stream estimate -- one batch of
     # `batch_size` samples completes every `predicted_median_ms`, back-to-back,
@@ -441,6 +625,7 @@ def _predict_or_raise(
         "batch_size": batch_size,
         "params": {key: value for key, value in normalized.items() if key != "batch_size"},
         "predicted_median_ms": predicted_median_ms,
+        "raw_predicted_median_ms": raw_predicted_median_ms,
         "predicted_p90_ms": float(row["predicted_p90_ms"]),
         "predicted_throughput_rps": predicted_throughput_rps,
         "warnings": warnings,

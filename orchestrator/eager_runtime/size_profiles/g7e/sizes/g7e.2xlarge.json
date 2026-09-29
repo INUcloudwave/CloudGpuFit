@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "instance_type": "g7e.2xlarge",
+  "gpu_family": "g7e",
+  "vcpu": 8,
+  "ram_gib": 64,
+  "spec_source": {
+    "vcpu": "AWS product page https://aws.amazon.com/ec2/instance-types/g7e/",
+    "ram_gib": "AWS product page https://aws.amazon.com/ec2/instance-types/g7e/"
+  },
+  "overheads": {
+    "t_h2d_base": 0.002477968236590966,
+    "t_d2h_base": 0.00029080707346729184,
+    "bw_h2d_GBs": 55.4963266029755,
+    "bw_d2h_GBs": 57.01994377040717,
+    "t_dispatch_light": 0.0060211700002810176,
+    "t_dispatch_heavy": 0.009572189999857983,
+    "t_sync": 0.0029510969999932968,
+    "t_python_loop": 3.528269999719669e-05
+  },
+  "compiled_context_calibration": {
+    "kernel_scale": 0.8985230267443265,
+    "external_launch_ms": 0.004324157940940885,
+    "fusion_launch_ms": 0.0,
+    "fixed_overhead_ms": 0.4124038020989419,
+    "source": "targets/g7e.2xlarge/compiled_context_calibration.json (model-independent, calibrated on compiled_core)"
+  },
+  "calibration_files": {
+    "p90_calibration_factor": "inherit_base",
+    "first_token_calibration": "inherit_base"
+  },
+  "provenance": {
+    "status": "measured",
+    "source": "targets/g7e.2xlarge/hardware_profile.json (directly calibrated base target)"
+  },
+  "role": "gpu_base"
+}

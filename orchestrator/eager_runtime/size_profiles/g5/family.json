@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "gpu_family": "g5",
+  "gpu_name": "NVIDIA A10G",
+  "gpu_base_target": "g5.xlarge",
+  "description": "GPU kernel-time models (NVIDIA A10G) shared by every g5 size; only host-side overheads differ per size."
+}

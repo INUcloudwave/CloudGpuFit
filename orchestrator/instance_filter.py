@@ -1,112 +1,138 @@
 """AWS GPU instance candidate filter.
 
-Turns an xMem VRAM requirement into a list of AWS single-GPU G-series
-instance candidates that `eager_runtime` has -- directly or via the
-size-scaling proxy below -- a calibrated latency basis for.
+Turns a VRAM requirement into the AWS single-GPU instances that can be
+recommended. An instance is a candidate ONLY if eager_runtime has a target
+for it -- targets/<instance>/ with its own validated manifest, either a full
+calibrated target or a size target built by build_size_target.py. There is no
+proxy: an instance that was never measured (g6.2xlarge, ... ) is not
+offered, and no latency is ever scaled by vCPU count. A new size becomes a
+candidate the moment its target directory exists, with no code change here.
 
-Scope (프로토타입, CLAUDE_HANDOFF_CLOUDGPUFIT_EAGER_RUNTIME.md §1, §8):
-  - 추론(inference) 전용이므로 g-시리즈만 대상으로 한다.
-  - 프로토타입이므로 GPU가 1개뿐인 인스턴스만 지원한다. 같은 패밀리의
-    멀티-GPU 크기(g5.12xlarge/.24xlarge/.48xlarge, g4dn.12xlarge,
-    g6.12xlarge/.24xlarge/.48xlarge, g6e.12xlarge/.24xlarge/.48xlarge,
-    g5g.16xlarge/.metal, g7e.12xlarge/.24xlarge/.48xlarge 등)는 이번
-    범위 밖이다. AWS 실제 스펙(EC2 DescribeInstanceTypes, 이 저장소의
-    aws_g_series_ap-northeast-2.json)으로 gpu_count==1만 추려서 아래
-    29개를 등록해뒀다.
-  - eager_runtime이 실제로 캘리브레이션한 target은 딱 4개
-    (g4dn.xlarge/g5.xlarge/g6.xlarge/g6e.xlarge)뿐이다. 나머지 25개
-    (같은 패밀리의 2xlarge~16xlarge, 그리고 g5g/g7e/gr6 패밀리 전체)는
-    아래 `eager_runtime_profile`로 그 4개 중 하나를 "빌려 쓰고",
-    vCPU 개수 차이만큼 `latency_scale_for_vcpu()`로 지연시간을
-    조정한다 -- 실측 캘리브레이션이 아니라 근사치다. 자세한 내용과
-    "나중에 반드시 갈아엎어야 하는 이유"는 그 함수의 docstring 참고.
+GPU/host specs come from SUPPORTED_GPU_INSTANCES; the target's manifest must
+have been calibrated on the family's GPU (GPU_FAMILIES).
 
-이 모듈은 AWS 가격을 하드코딩하지 않는다 (§8, §16: "AWS 가격을 출처 없이
-하드코딩하지 않는다"). region별 가용성/가격은 호출자가 `instance_catalog`로
-넘긴다 — 다른 팀원이 관리하는 인스턴스/가격 테이블이나 AWS Price List API
-결과를 그대로 넣으면 된다. catalog가 비어 있으면(아직 준비되지 않았으면)
-이 필터는 후보를 하나도 반환하지 않는다 — 없는 데이터를 추측해서 채우지
-않는다.
+AWS prices and region availability are not hardcoded: the caller passes
+`instance_catalog` (aws_pricing.py / instance_catalog.py). A missing catalog
+row means "availability unknown" and the instance is dropped; a row with
+price None means "available, price unknown" and the budget check is skipped.
 
-GPU 모델/VRAM/vCPU는 하드코딩이지만, AWS 가격과 달리 이건 자주 안 바뀌는
-정적 스펙 데이터라서(그리고 이 저장소의 aws_g_series_ap-northeast-2.json,
-EC2 DescribeInstanceTypes 실측 기준) §8/§16의 "가격 하드코딩 금지"와는
-별개 사안이다.
+History: unmeasured sizes (2xlarge-16xlarge, g5g, ...) used to borrow a
+calibrated .xlarge result scaled by a guessed vCPU curve
+(latency_scale_for_vcpu). That proxy is removed: they stay in
+SUPPORTED_GPU_INSTANCES but are recommended only once they have their own
+target (measured, or built from a size profile with build_size_target.py --
+GPU kernel models shared, only the measured host overheads differ).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from math import log2
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-# FIXME(latency-proxy): 아래 4개(.xlarge, vcpu=4)는 eager_runtime이 실제
-# 캘리브레이션한 target이고, 나머지 25개는 전부 이 4개 중 하나의 latency/
-# throughput 예측 결과를 "빌려서" vCPU 스케일만 적용한 것이다 (내일
-# 영상 제출용으로 빠르게 채워넣은 자리채움 -- 나중에 실제 GPU에서
-# 각 크기별로 다시 캘리브레이션해서 이 매핑 자체를 갈아엎어야 한다):
-#   - g4dn/g5/g6/g6e의 2xlarge~16xlarge: 같은 패밀리의 .xlarge를 그대로 사용
-#     (GPU 칩은 완전히 동일, vCPU/RAM만 다름 -- 그래도 실측은 아님).
-#   - g5g(T4g, Graviton): g4dn.xlarge(T4)를 대신 사용. T4g는 T4의 Graviton
-#     ARM 버전이라 GPU 성능 자체는 T4와 가장 가까울 것으로 "추정"만 함.
-#   - g7e(NVIDIA RTX PRO Server 6000): g6e.xlarge(L40S)를 대신 사용.
-#     현재 캘리브레이션된 것 중 가장 강력한 GPU라 골랐을 뿐, RTX PRO 6000
-#     자체 성능 특성은 전혀 반영 안 됨.
-#   - gr6(NVIDIA L4): g6.xlarge(L4)를 대신 사용. GPU 칩 자체는 동일.
-# 스펙 출처: 이 저장소의 aws_g_series_ap-northeast-2.json
-# (spec_source: "EC2 DescribeInstanceTypes").
+from eager_runtime import available_targets, target_provenance
+
+RUNTIME_ROOT = Path(__file__).resolve().parent / "eager_runtime"
+ENGINE_MODES = ("eager", "compiled")
+
+# Every single-GPU instance the service knows about: the original list from
+# EC2 DescribeInstanceTypes (ap-northeast-2) minus g5g (Graviton/T4G, decided
+# not to support), plus g7.2xlarge from
+# https://aws.amazon.com/ec2/instance-types/g7/. aws_pricing.py fetches prices
+# for exactly these keys.
+#
+# Being listed here does NOT make an instance recommendable. It is recommended
+# only when eager_runtime has its own target for it (targets/<instance>/ with a
+# validated manifest). Today that is g4dn.xlarge, g5.xlarge, g6.xlarge,
+# g6e.xlarge, g7.2xlarge, g7e.2xlarge and gr6.4xlarge. The others stay listed
+# and start being recommended automatically once their measured target is
+# added -- there is no proxy and no vCPU scaling in between.
 SUPPORTED_GPU_INSTANCES: dict[str, dict[str, Any]] = {
-    "g4dn.xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 4, "eager_runtime_profile": "g4dn.xlarge"},
-    "g4dn.2xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 8, "eager_runtime_profile": "g4dn.xlarge"},
-    "g4dn.4xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 16, "eager_runtime_profile": "g4dn.xlarge"},
-    "g4dn.8xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 32, "eager_runtime_profile": "g4dn.xlarge"},
-    "g4dn.16xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 64, "eager_runtime_profile": "g4dn.xlarge"},
-    "g5.xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 4, "eager_runtime_profile": "g5.xlarge"},
-    "g5.2xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 8, "eager_runtime_profile": "g5.xlarge"},
-    "g5.4xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 16, "eager_runtime_profile": "g5.xlarge"},
-    "g5.8xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 32, "eager_runtime_profile": "g5.xlarge"},
-    "g5.16xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 64, "eager_runtime_profile": "g5.xlarge"},
-    "g5g.xlarge": {"gpu_name": "NVIDIA T4G", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 4, "eager_runtime_profile": "g4dn.xlarge"},
-    "g5g.2xlarge": {"gpu_name": "NVIDIA T4G", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 8, "eager_runtime_profile": "g4dn.xlarge"},
-    "g5g.4xlarge": {"gpu_name": "NVIDIA T4G", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 16, "eager_runtime_profile": "g4dn.xlarge"},
-    "g5g.8xlarge": {"gpu_name": "NVIDIA T4G", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 32, "eager_runtime_profile": "g4dn.xlarge"},
-    "g6.xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 4, "eager_runtime_profile": "g6.xlarge"},
-    "g6.2xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 8, "eager_runtime_profile": "g6.xlarge"},
-    "g6.4xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 16, "eager_runtime_profile": "g6.xlarge"},
-    "g6.8xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 32, "eager_runtime_profile": "g6.xlarge"},
-    "g6.16xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 64, "eager_runtime_profile": "g6.xlarge"},
-    "g6e.xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 4, "eager_runtime_profile": "g6e.xlarge"},
-    "g6e.2xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 8, "eager_runtime_profile": "g6e.xlarge"},
-    "g6e.4xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 16, "eager_runtime_profile": "g6e.xlarge"},
-    "g6e.8xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 32, "eager_runtime_profile": "g6e.xlarge"},
-    "g6e.16xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 64, "eager_runtime_profile": "g6e.xlarge"},
-    "g7e.2xlarge": {"gpu_name": "NVIDIA RTX PRO Server 6000", "gpu_count": 1, "gpu_vram_gb": 96, "vcpu": 8, "eager_runtime_profile": "g6e.xlarge"},
-    "g7e.4xlarge": {"gpu_name": "NVIDIA RTX PRO Server 6000", "gpu_count": 1, "gpu_vram_gb": 96, "vcpu": 16, "eager_runtime_profile": "g6e.xlarge"},
-    "g7e.8xlarge": {"gpu_name": "NVIDIA RTX PRO Server 6000", "gpu_count": 1, "gpu_vram_gb": 96, "vcpu": 32, "eager_runtime_profile": "g6e.xlarge"},
-    "gr6.4xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 16, "eager_runtime_profile": "g6.xlarge"},
-    "gr6.8xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 32, "eager_runtime_profile": "g6.xlarge"},
+    "g4dn.xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 4},
+    "g4dn.2xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 8},
+    "g4dn.4xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 16},
+    "g4dn.8xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 32},
+    "g4dn.16xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 64},
+    "g5.xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 4},
+    "g5.2xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 8},
+    "g5.4xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 16},
+    "g5.8xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 32},
+    "g5.16xlarge": {"gpu_name": "NVIDIA A10G", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 64},
+    "g6.xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 4},
+    "g6.2xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 8},
+    "g6.4xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 16},
+    "g6.8xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 32},
+    "g6.16xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 64},
+    "g6e.xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 4},
+    "g6e.2xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 8},
+    "g6e.4xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 16},
+    "g6e.8xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 32},
+    "g6e.16xlarge": {"gpu_name": "NVIDIA L40S", "gpu_count": 1, "gpu_vram_gb": 48, "vcpu": 64},
+    "g7.2xlarge": {"gpu_name": "NVIDIA RTX PRO 4500 Blackwell Server Edition", "gpu_count": 1, "gpu_vram_gb": 32, "vcpu": 8},
+    "g7e.2xlarge": {"gpu_name": "NVIDIA RTX PRO Server 6000", "gpu_count": 1, "gpu_vram_gb": 96, "vcpu": 8},
+    "g7e.4xlarge": {"gpu_name": "NVIDIA RTX PRO Server 6000", "gpu_count": 1, "gpu_vram_gb": 96, "vcpu": 16},
+    "g7e.8xlarge": {"gpu_name": "NVIDIA RTX PRO Server 6000", "gpu_count": 1, "gpu_vram_gb": 96, "vcpu": 32},
+    "gr6.4xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 16},
+    "gr6.8xlarge": {"gpu_name": "NVIDIA L4", "gpu_count": 1, "gpu_vram_gb": 24, "vcpu": 32},
 }
 
-# FIXME(latency-proxy): 순전히 "vCPU가 늘어나면 호스트 쪽 오버헤드(커널 launch,
-# 입출력 전처리 등)가 조금 줄어들 것"이라는 손짐작 곡선이다. 실측 데이터
-# 없음. GPU가 1개뿐인 인스턴스에서는 추론 자체가 GPU-bound라 vCPU 개수가
-# 지연시간에 미치는 실제 영향은 이보다 훨씬 작을 수도, 워크로드에 따라
-# 아예 다른 패턴일 수도 있다. vCPU가 2배씩 늘어날 때마다 3%씩 빨라지고,
-# 최대 15%(64 vCPU, base 4 vCPU 대비 16배)까지만 빨라지는 것으로 캡을 씌워둔
-# 것도 임의의 값이다. 나중에 실제로 각 크기별 GPU 인스턴스를 캘리브레이션
-# 하게 되면 이 함수 자체를 통째로 지우고 진짜 계측값으로 교체해야 한다.
-_LATENCY_SCALE_PER_VCPU_DOUBLING = 0.03
-_LATENCY_SCALE_FLOOR = 0.85
-_BASELINE_VCPU = 4
+# Safety check: the GPU a target was calibrated on (its manifest's gpu_name)
+# must be the family's GPU, so an instance can never be answered with another
+# GPU's models. A family not listed here accepts the GPU recorded in its own
+# validated manifest when its target arrives.
+GPU_FAMILIES: dict[str, str] = {
+    "g4dn": "Tesla T4",
+    "g5": "NVIDIA A10G",
+    "g6": "NVIDIA L4",
+    "g6e": "NVIDIA L40S",
+    "g7": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "g7e": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+}
 
 
-def latency_scale_for_vcpu(vcpu: int) -> float:
-    """placeholder 전용: baseline(4 vCPU, 실제 캘리브레이션된 .xlarge 크기)
-    대비 예상 지연시간 배율(<=1.0, 작을수록 더 빠름). vCPU가 baseline보다
-    적거나 같으면 1.0(스케일 없음)."""
-    if vcpu <= _BASELINE_VCPU:
-        return 1.0
-    doublings = log2(vcpu / _BASELINE_VCPU)
-    return max(_LATENCY_SCALE_FLOOR, 1.0 - _LATENCY_SCALE_PER_VCPU_DOUBLING * doublings)
+def _manifest(instance_type: str, runtime_root: Path) -> dict[str, Any] | None:
+    path = runtime_root / "targets" / instance_type / "runtime_manifest.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def instance_spec(instance_type: str, runtime_root: Path = RUNTIME_ROOT) -> dict[str, Any] | None:
+    """Spec of a recommendable instance, or None if it is not listed, has no
+    target of its own, or its target was calibrated on a different GPU."""
+    listed = SUPPORTED_GPU_INSTANCES.get(instance_type)
+    manifest = _manifest(instance_type, runtime_root)
+    if listed is None or manifest is None:
+        return None
+    size_profile = manifest.get("size_profile") or {}
+    family = size_profile.get("gpu_family") or instance_type.split(".", 1)[0]
+    expected_gpu = GPU_FAMILIES.get(family)
+    if expected_gpu is not None and manifest.get("gpu_name") != expected_gpu:
+        return None
+    return {**listed, "gpu_family": family, "calibrated_gpu": manifest.get("gpu_name")}
+
+
+def supported_instances(
+    engine_mode: str = "eager",
+    runtime_root: Path = RUNTIME_ROOT,
+) -> dict[str, dict[str, Any]]:
+    """Every instance that can be recommended for this engine mode."""
+    specs = {}
+    for instance_type in available_targets(engine_mode=engine_mode):
+        spec = instance_spec(instance_type, runtime_root)
+        if spec is not None:
+            specs[instance_type] = spec
+    return specs
+
+
+def recommendable_instance_types(runtime_root: Path = RUNTIME_ROOT) -> list[str]:
+    """Every instance that can be recommended in at least one engine mode --
+    the set aws_pricing.py fetches prices for."""
+    names: set[str] = set()
+    for mode in ENGINE_MODES:
+        names |= set(supported_instances(mode, runtime_root))
+    return sorted(names)
 
 
 @dataclass(frozen=True)
@@ -130,31 +156,24 @@ def filter_instances(
     aws_region: str,
     budget_usd_per_hour: float | None,
     instance_catalog: Sequence[Mapping[str, Any]],
-    installed_targets: Iterable[str],
+    installed_targets: Iterable[str] | None = None,
     *,
-    supported_instances: Mapping[str, Mapping[str, Any]] = SUPPORTED_GPU_INSTANCES,
+    engine_mode: str = "eager",
+    supported: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return single-GPU G-series candidates passing every condition:
+    """Candidates passing every condition:
 
-      1. gpu_vram_gb >= required_vram_gb
-      2. instance is listed as available in `aws_region` by instance_catalog
-      3. price_usd_per_hour <= budget_usd_per_hour, when a price is known
-      4. eager_runtime has an installed profile for its `eager_runtime_profile`
-         (`installed_targets`) -- not necessarily for the instance's own
-         name; see the FIXME(latency-proxy) notes above SUPPORTED_GPU_INSTANCES.
+      1. eager_runtime has a target for the instance itself in `engine_mode`
+      2. gpu_vram_gb >= required_vram_gb
+      3. listed as available in `aws_region` by instance_catalog
+      4. price <= budget, when the price is known
 
-    instance_catalog: list of {"instance_type", "aws_region",
-    "price_usd_per_hour"} rows. A region+instance combination with no
-    matching row is treated as "availability unknown" and is dropped —
-    not guessed into or out of the result. A row that *is* present for the
-    region but carries `price_usd_per_hour: None` means "available, price
-    unknown": it is kept and the budget check is skipped for it rather than
-    invented as 0.0 (CLAUDE_HANDOFF §8/§16).
-
-    Returns candidates sorted by ascending gpu_vram_gb (cheapest-fit first
-    in VRAM terms — not by price, since price may be partly unknown).
+    Sorted by ascending gpu_vram_gb (price may be partly unknown).
     """
-    installed = set(installed_targets)
+    specs = dict(supported) if supported is not None else supported_instances(engine_mode)
+    if installed_targets is not None:
+        allowed = set(installed_targets)
+        specs = {name: spec for name, spec in specs.items() if name in allowed}
 
     catalog_by_type: dict[str, _CatalogEntry] = {}
     for raw in instance_catalog:
@@ -163,36 +182,26 @@ def filter_instances(
             catalog_by_type[entry.instance_type] = entry
 
     candidates: list[dict[str, Any]] = []
-    for instance_type, spec in supported_instances.items():
+    for instance_type, spec in specs.items():
         if spec["gpu_vram_gb"] < required_vram_gb:
             continue
-        if spec["eager_runtime_profile"] not in installed:
+        entry = catalog_by_type.get(instance_type)
+        if entry is None:
             continue
-
-        catalog_entry = catalog_by_type.get(instance_type)
-        if catalog_entry is None:
-            # No catalog row for this instance in this region: availability
-            # is unknown, so it is not offered as a candidate.
+        price = entry.price_usd_per_hour
+        if budget_usd_per_hour is not None and price is not None and price > budget_usd_per_hour:
             continue
-
-        price = catalog_entry.price_usd_per_hour
-        if (
-            budget_usd_per_hour is not None
-            and price is not None
-            and price > budget_usd_per_hour
-        ):
-            continue
-
         candidates.append(
             {
                 "instance_type": instance_type,
                 "gpu_name": spec["gpu_name"],
                 "gpu_count": spec["gpu_count"],
                 "gpu_vram_gb": spec["gpu_vram_gb"],
+                "vcpu": spec["vcpu"],
                 "price_usd_per_hour": price,
                 "aws_region": aws_region,
+                "profile_provenance": target_provenance(instance_type)["status"],
             }
         )
-
-    candidates.sort(key=lambda item: item["gpu_vram_gb"])
+    candidates.sort(key=lambda item: (item["gpu_vram_gb"], item["instance_type"]))
     return candidates

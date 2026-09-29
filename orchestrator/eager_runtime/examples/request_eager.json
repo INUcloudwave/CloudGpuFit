@@ -1,0 +1,11 @@
+{
+  "engine_mode": "eager",
+  "target_instance": "g6.xlarge",
+  "model": "Qwen/Qwen2-1.5B",
+  "dtype": "fp16",
+  "batch_size": 1,
+  "params": {
+    "seq_len": 128,
+    "mode": "prefill"
+  }
+}

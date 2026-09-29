@@ -1,0 +1,250 @@
+{
+  "schema_version": 2,
+  "predictor_version": "compiled_fusion_v2",
+  "target_instance": "g5.xlarge",
+  "gpu_name": "NVIDIA A10G",
+  "engine": {
+    "backend": "inductor",
+    "compile_mode": "default",
+    "fullgraph": true,
+    "dynamic_shapes": false,
+    "measurement_scope": "inductor_lowered_fusion_group_kernel_sum"
+  },
+  "prediction_equation": "kernel_ms = max(roofline_ms, kernel_floor_ms) * expm1(lightgbm_ratio_log)",
+  "kernel_floor": {
+    "value_ms": 0.001344,
+    "profile_path": "compiled_fusion_kernel_profile.json",
+    "profile_sha256": "5c38841d58cdb7c0632f5d52cb05fa45c8f4a4bc908893efae2d18fb4b52ef74",
+    "method": "median_small_single_inductor_kernel_duration"
+  },
+  "feature_schema": [
+    "Input_Bytes",
+    "Output_Bytes",
+    "Ideal_Memory_Bytes",
+    "Estimated_FLOPs",
+    "Arithmetic_Intensity",
+    "Output_Elements",
+    "Max_Node_Elements",
+    "Reduction_Size",
+    "Op_Count",
+    "Pointwise_Count",
+    "Reduction_Count",
+    "Memory_Count",
+    "Binary_Count",
+    "Broadcast_Count",
+    "Transcendental_Count",
+    "Input_Tensor_Count",
+    "Output_Tensor_Count",
+    "Rank",
+    "Last_Dim",
+    "Estimated_L2_Fit",
+    "Estimated_Wave_Count",
+    "Has_Heavy_Predecessor",
+    "Has_Heavy_Successor",
+    "Is_Pointwise_Group",
+    "Is_Reduction_Group",
+    "Is_Memory_Group",
+    "Precision_Bytes"
+  ],
+  "training_rows": 224,
+  "training_patterns": [
+    "add_relu",
+    "bias_gelu",
+    "broadcast_add_mul",
+    "gelu",
+    "layernorm",
+    "masked_softmax",
+    "pointwise_chain",
+    "reduce_sum",
+    "relu",
+    "residual_layernorm",
+    "residual_silu_mul",
+    "rmsnorm",
+    "sigmoid_mul",
+    "softmax"
+  ],
+  "shape_range": {
+    "rows": [
+      1,
+      8192
+    ],
+    "cols": [
+      64,
+      8960
+    ],
+    "elements": [
+      64,
+      18350080
+    ]
+  },
+  "cross_validation": {
+    "method": "five_fold_shape_holdout",
+    "median": {
+      "rows": 224,
+      "mape_percent": 8.178631423471485,
+      "median_ape_percent": 3.4702859536242903,
+      "p90_ape_percent": 24.11064415469101,
+      "max_ape_percent": 57.74232615666246,
+      "rmse_ms": 0.0017703545026841795
+    },
+    "median_by_kind": {
+      "pointwise": {
+        "rows": 128,
+        "mape_percent": 6.150980288476855,
+        "median_ape_percent": 2.6248995378999744,
+        "p90_ape_percent": 19.273580056173035,
+        "max_ape_percent": 39.16693298487362,
+        "rmse_ms": 0.0008034291814761128
+      },
+      "reduction": {
+        "rows": 96,
+        "mape_percent": 10.88216627013099,
+        "median_ape_percent": 5.661391382993578,
+        "p90_ape_percent": 31.685038353173738,
+        "max_ape_percent": 57.74232615666246,
+        "rmse_ms": 0.002540150366784713
+      }
+    },
+    "median_by_pattern_diagnostic": {
+      "add_relu": {
+        "rows": 16,
+        "mape_percent": 3.9719004018825093,
+        "median_ape_percent": 1.6663043623813976,
+        "p90_ape_percent": 7.159184838592565,
+        "max_ape_percent": 29.717514569174103,
+        "rmse_ms": 0.00042105722536437947
+      },
+      "bias_gelu": {
+        "rows": 16,
+        "mape_percent": 6.504449031308923,
+        "median_ape_percent": 2.626061519325894,
+        "p90_ape_percent": 14.295087830208525,
+        "max_ape_percent": 32.09928838161481,
+        "rmse_ms": 0.0005853763230028068
+      },
+      "broadcast_add_mul": {
+        "rows": 16,
+        "mape_percent": 7.525494127077456,
+        "median_ape_percent": 4.380118842915383,
+        "p90_ape_percent": 20.223311625822337,
+        "max_ape_percent": 32.63058248316968,
+        "rmse_ms": 0.0007747867931766251
+      },
+      "gelu": {
+        "rows": 16,
+        "mape_percent": 6.920736107816809,
+        "median_ape_percent": 4.4248484927657845,
+        "p90_ape_percent": 22.78359102865383,
+        "max_ape_percent": 27.937452620405345,
+        "rmse_ms": 0.0005860736947766065
+      },
+      "layernorm": {
+        "rows": 16,
+        "mape_percent": 10.010650106897666,
+        "median_ape_percent": 2.858287512581123,
+        "p90_ape_percent": 31.685038353173738,
+        "max_ape_percent": 40.45671357111328,
+        "rmse_ms": 0.0006117187758296485
+      },
+      "masked_softmax": {
+        "rows": 16,
+        "mape_percent": 10.542426613486091,
+        "median_ape_percent": 6.573234771271523,
+        "p90_ape_percent": 24.749630568088318,
+        "max_ape_percent": 53.86200115098596,
+        "rmse_ms": 0.004806155973208394
+      },
+      "pointwise_chain": {
+        "rows": 16,
+        "mape_percent": 6.13546874107446,
+        "median_ape_percent": 2.5869639046293686,
+        "p90_ape_percent": 19.273580056173035,
+        "max_ape_percent": 29.50357565225134,
+        "rmse_ms": 0.0013151247791826925
+      },
+      "reduce_sum": {
+        "rows": 16,
+        "mape_percent": 10.829561408437758,
+        "median_ape_percent": 6.206022745903477,
+        "p90_ape_percent": 27.244865108345923,
+        "max_ape_percent": 57.74232615666246,
+        "rmse_ms": 0.0009260952822133822
+      },
+      "relu": {
+        "rows": 16,
+        "mape_percent": 6.687867694594155,
+        "median_ape_percent": 2.594977621412185,
+        "p90_ape_percent": 27.323279495833486,
+        "max_ape_percent": 35.80762757133976,
+        "rmse_ms": 0.0006137613878692905
+      },
+      "residual_layernorm": {
+        "rows": 16,
+        "mape_percent": 12.428400227418607,
+        "median_ape_percent": 5.839144575996718,
+        "p90_ape_percent": 37.77881648516273,
+        "max_ape_percent": 53.87492801694877,
+        "rmse_ms": 0.002825514451058344
+      },
+      "residual_silu_mul": {
+        "rows": 16,
+        "mape_percent": 5.622190909576545,
+        "median_ape_percent": 2.1571749089859704,
+        "p90_ape_percent": 22.458472714053364,
+        "max_ape_percent": 23.999984818355312,
+        "rmse_ms": 0.0007946767389375776
+      },
+      "rmsnorm": {
+        "rows": 16,
+        "mape_percent": 8.278009581141113,
+        "median_ape_percent": 3.9100278040720724,
+        "p90_ape_percent": 26.24567187070097,
+        "max_ape_percent": 45.21027106884083,
+        "rmse_ms": 0.0014817000779715924
+      },
+      "sigmoid_mul": {
+        "rows": 16,
+        "mape_percent": 5.839735294483993,
+        "median_ape_percent": 1.441317651560687,
+        "p90_ape_percent": 18.02260695932669,
+        "max_ape_percent": 39.16693298487362,
+        "rmse_ms": 0.0009810650715202987
+      },
+      "softmax": {
+        "rows": 16,
+        "mape_percent": 13.203949683404709,
+        "median_ape_percent": 5.702833552260326,
+        "p90_ape_percent": 48.181177330308955,
+        "max_ape_percent": 49.858317015472444,
+        "rmse_ms": 0.00205042159318794
+      }
+    },
+    "p90_raw": {
+      "rows": 224,
+      "mape_percent": 8.564179699514836,
+      "median_ape_percent": 3.2122187228541637,
+      "p90_ape_percent": 25.23358253095438,
+      "max_ape_percent": 59.439651307923626,
+      "rmse_ms": 0.001690886936901297
+    }
+  },
+  "p90_calibration": {
+    "method": "fusion_group_oof_conformal_ratio",
+    "target_coverage": 0.9,
+    "factor": 1.178540691443347,
+    "quantile_rank": 203,
+    "oof_coverage": 0.90625
+  },
+  "artifacts": {
+    "median_model": {
+      "path": "compiled_fusion_median.txt",
+      "size_bytes": 521935,
+      "sha256": "fb1c475d5f6c58fd7adbd046851fe4711de9211e092bc3ed7690763fd6b0a070"
+    },
+    "p90_model": {
+      "path": "compiled_fusion_p90.txt",
+      "size_bytes": 532356,
+      "sha256": "085a88ccfddd049e44b5574f0610fd6fced0ebd0a3e52bfaaa0437a3e3e3daa6"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "input_rows": 4998,
+  "training_rows": 4998,
+  "filtered_rows": 0,
+  "max_clamped_fraction": 0.0,
+  "features": 45,
+  "families": [
+    "attention",
+    "flat",
+    "transformer",
+    "vision"
+  ],
+  "median_cv_best_iterations": [
+    1495,
+    1500,
+    1265,
+    1496
+  ],
+  "p90_cv_best_iterations": [
+    577,
+    643,
+    610,
+    723
+  ],
+  "final_median_rounds": 1495,
+  "final_p90_rounds": 626,
+  "macro_mape_percent": 8.502473826021669,
+  "weighted_mape_percent": 7.382040592325508
+}

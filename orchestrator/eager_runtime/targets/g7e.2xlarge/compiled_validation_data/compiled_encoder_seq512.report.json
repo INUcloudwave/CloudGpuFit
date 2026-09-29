@@ -1,0 +1,13 @@
+{
+  "target_instance": "g7e.2xlarge",
+  "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "base": "compiled_validation_data/compiled_encoder_seq512.csv",
+  "measurements": "results/g7e_compiled_components_holdout_fast/compiled_component_cases.csv",
+  "output": "/home/ubuntu/g7e_eager_collection/targets/g7e.2xlarge/compiled_validation_data/compiled_encoder_seq512.csv",
+  "rows": 6,
+  "successful_rows": 6,
+  "models": [
+    "bert",
+    "roberta"
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "model": "microsoft/resnet-18",
+  "model_config_snapshot": {
+    "model_type": "resnet",
+    "architectures": [
+      "ResNetForImageClassification"
+    ],
+    "num_channels": 3,
+    "embedding_size": 64,
+    "hidden_sizes": [
+      64,
+      128,
+      256,
+      512
+    ],
+    "depths": [
+      2,
+      2,
+      2,
+      2
+    ],
+    "layer_type": "basic",
+    "hidden_act": "relu",
+    "downsample_in_first_stage": false,
+    "num_labels": 1000
+  },
+  "type": "vision_cls",
+  "dtype": "fp16",
+  "batch_size": 32,
+  "params": {
+    "resolution": 224
+  },
+  "deployment": {
+    "aws_region": "ap-northeast-2",
+    "budget_usd_per_hour": 10
+  },
+  "warnings": [],
+  "engine_mode": "eager"
+}

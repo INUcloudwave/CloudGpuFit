@@ -1,0 +1,180 @@
+{
+  "target_instance": "g7e.2xlarge",
+  "total_rows": 78,
+  "overall": {
+    "rows": 78,
+    "mape_percent": 15.20700622602504,
+    "median_ape_percent": 15.129143025335779,
+    "p90_ape_percent": 26.50271220384901,
+    "max_ape_percent": 37.302955278617226,
+    "mean_bias_percent": -3.7633439333220022,
+    "rmse_ms": 4.405026491568302,
+    "p90_coverage": 0.5256410256410257
+  },
+  "by_validation_set": {
+    "compiled_core": {
+      "rows": 54,
+      "mape_percent": 14.318829173625284,
+      "median_ape_percent": 14.527569003708049,
+      "p90_ape_percent": 22.112069248020973,
+      "max_ape_percent": 29.173624933825863,
+      "mean_bias_percent": -6.589954825765367,
+      "rmse_ms": 1.0713385201439112,
+      "p90_coverage": 0.46296296296296297
+    },
+    "compiled_encoder_seq512": {
+      "rows": 6,
+      "mape_percent": 15.352423299951448,
+      "median_ape_percent": 18.047475222504332,
+      "p90_ape_percent": 27.240015098741203,
+      "max_ape_percent": 27.240015098741203,
+      "mean_bias_percent": 14.815795275079852,
+      "rmse_ms": 1.2313471142417745,
+      "p90_coverage": 1.0
+    },
+    "compiled_longseq": {
+      "rows": 18,
+      "mape_percent": 17.823065025248834,
+      "median_ape_percent": 16.63636439666316,
+      "p90_ape_percent": 34.0360451163417,
+      "max_ape_percent": 37.302955278617226,
+      "mean_bias_percent": -1.476557658792529,
+      "rmse_ms": 8.951894535981237,
+      "p90_coverage": 0.5555555555555556
+    }
+  },
+  "by_workload_family": {
+    "audio_encoder": {
+      "rows": 3,
+      "mape_percent": 14.757176007255744,
+      "median_ape_percent": 13.540462123729316,
+      "p90_ape_percent": 17.551167758728152,
+      "max_ape_percent": 17.551167758728152,
+      "mean_bias_percent": 3.0563975014369755,
+      "rmse_ms": 0.3503385142093534,
+      "p90_coverage": 0.6666666666666666
+    },
+    "decoder_llm": {
+      "rows": 30,
+      "mape_percent": 14.678040289982595,
+      "median_ape_percent": 13.823399959575157,
+      "p90_ape_percent": 30.5685673373012,
+      "max_ape_percent": 37.302955278617226,
+      "mean_bias_percent": -2.9193638535326896,
+      "rmse_ms": 6.977051300006658,
+      "p90_coverage": 0.6333333333333333
+    },
+    "text_encdec": {
+      "rows": 15,
+      "mape_percent": 17.176188129786922,
+      "median_ape_percent": 18.37753488664944,
+      "p90_ape_percent": 21.028866473462557,
+      "max_ape_percent": 32.3436605675272,
+      "mean_bias_percent": -11.498602112853142,
+      "rmse_ms": 1.6291288295738875,
+      "p90_coverage": 0.2
+    },
+    "text_encoder": {
+      "rows": 24,
+      "mape_percent": 13.122016142547855,
+      "median_ape_percent": 12.58194800265365,
+      "p90_ape_percent": 23.806923752065927,
+      "max_ape_percent": 27.240015098741203,
+      "mean_bias_percent": 2.8685681255796003,
+      "rmse_ms": 0.698077382913383,
+      "p90_coverage": 0.6666666666666666
+    },
+    "vision_cls": {
+      "rows": 6,
+      "mape_percent": 21.493756590125937,
+      "median_ape_percent": 22.605591491909003,
+      "p90_ape_percent": 29.173624933825863,
+      "max_ape_percent": 29.173624933825863,
+      "mean_bias_percent": -18.582617836426625,
+      "rmse_ms": 0.4619159534331623,
+      "p90_coverage": 0.16666666666666666
+    }
+  },
+  "by_model": {
+    "bert": {
+      "rows": 12,
+      "mape_percent": 13.286465162155194,
+      "median_ape_percent": 12.118441795052087,
+      "p90_ape_percent": 22.112069248020973,
+      "max_ape_percent": 27.240015098741203,
+      "mean_bias_percent": 4.017599537926042,
+      "rmse_ms": 0.7066163569600479,
+      "p90_coverage": 0.6666666666666666
+    },
+    "mobilenet_v2": {
+      "rows": 3,
+      "mape_percent": 26.315151143202296,
+      "median_ape_percent": 28.849541686072588,
+      "p90_ape_percent": 29.173624933825863,
+      "max_ape_percent": 29.173624933825863,
+      "mean_bias_percent": -26.315151143202296,
+      "rmse_ms": 0.6207683888223903,
+      "p90_coverage": 0.0
+    },
+    "opt": {
+      "rows": 15,
+      "mape_percent": 15.60287734101931,
+      "median_ape_percent": 16.491525696234,
+      "p90_ape_percent": 34.0360451163417,
+      "max_ape_percent": 37.302955278617226,
+      "mean_bias_percent": -15.476866947736074,
+      "rmse_ms": 6.093658755034583,
+      "p90_coverage": 0.4
+    },
+    "qwen2": {
+      "rows": 15,
+      "mape_percent": 13.753203238945874,
+      "median_ape_percent": 13.009090874274335,
+      "p90_ape_percent": 26.50271220384901,
+      "max_ape_percent": 30.5685673373012,
+      "mean_bias_percent": 9.638139240670698,
+      "rmse_ms": 7.760529148391853,
+      "p90_coverage": 0.8666666666666667
+    },
+    "resnet18": {
+      "rows": 3,
+      "mape_percent": 16.67236203704958,
+      "median_ape_percent": 16.994773675941232,
+      "p90_ape_percent": 24.288896174109574,
+      "max_ape_percent": 24.288896174109574,
+      "mean_bias_percent": -10.850084529650957,
+      "rmse_ms": 0.20341903428880104,
+      "p90_coverage": 0.3333333333333333
+    },
+    "roberta": {
+      "rows": 12,
+      "mape_percent": 12.957567122940516,
+      "median_ape_percent": 13.685618142374759,
+      "p90_ape_percent": 23.806923752065927,
+      "max_ape_percent": 25.968099421037344,
+      "mean_bias_percent": 1.7195367132331594,
+      "rmse_ms": 0.6894326574415414,
+      "p90_coverage": 0.6666666666666666
+    },
+    "t5": {
+      "rows": 15,
+      "mape_percent": 17.176188129786922,
+      "median_ape_percent": 18.37753488664944,
+      "p90_ape_percent": 21.028866473462557,
+      "max_ape_percent": 32.3436605675272,
+      "mean_bias_percent": -11.498602112853142,
+      "rmse_ms": 1.6291288295738875,
+      "p90_coverage": 0.2
+    },
+    "wav2vec2": {
+      "rows": 3,
+      "mape_percent": 14.757176007255744,
+      "median_ape_percent": 13.540462123729316,
+      "p90_ape_percent": 17.551167758728152,
+      "max_ape_percent": 17.551167758728152,
+      "mean_bias_percent": 3.0563975014369755,
+      "rmse_ms": 0.3503385142093534,
+      "p90_coverage": 0.6666666666666666
+    }
+  }
+}

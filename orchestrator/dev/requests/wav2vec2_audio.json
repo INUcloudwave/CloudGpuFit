@@ -1,0 +1,16 @@
+{
+  "model": "facebook/wav2vec2-base",
+  "type": "audio_encoder",
+  "model_config_preset": "wav2vec2",
+  "dtype": "fp16",
+  "batch_size": 8,
+  "params": {
+    "mode": "prefill",
+    "audio_samples": 32000
+  },
+  "engine_mode": "both",
+  "vram_required_gb": 2.0,
+  "aws_region": "ap-northeast-2",
+  "budget_usd_per_hour": null,
+  "instances": "all"
+}

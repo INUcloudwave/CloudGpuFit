@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "predictor_version": "eager_v4",
+  "predictor_version": "eager_v6_first_token_structural",
   "target_instance": "g6e.xlarge",
   "mode": "eager",
   "gpu_name": "NVIDIA L40S",
@@ -13,7 +13,8 @@
     "LINEAR_CONTEXT_MODEL_DIR": "linear_context_model_deep_v2",
     "CONV1D_MODEL_DIR": "conv1d_model",
     "EAGER_P90_CALIBRATION_FILE": "p90_calibration_factor.json",
-    "EAGER_HARDWARE_PROFILE": "hardware_profile.json"
+    "EAGER_HARDWARE_PROFILE": "hardware_profile.json",
+    "EAGER_FIRST_TOKEN_CALIBRATION_FILE": "first_token_calibration.json"
   },
   "artifacts": [
     {

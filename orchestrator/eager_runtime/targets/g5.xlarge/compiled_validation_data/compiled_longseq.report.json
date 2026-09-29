@@ -1,0 +1,14 @@
+{
+  "target_instance": "g5.xlarge",
+  "gpu_name": "NVIDIA A10G",
+  "base": "compiled_validation_data/compiled_longseq.csv",
+  "measurements": "results/g5_compiled_components_holdout_fast/compiled_component_cases.csv",
+  "output": "/home/ubuntu/g5_compiled_fusion/targets/g5.xlarge/compiled_validation_data/compiled_longseq.csv",
+  "rows": 18,
+  "successful_rows": 18,
+  "models": [
+    "opt",
+    "qwen2",
+    "t5"
+  ]
+}

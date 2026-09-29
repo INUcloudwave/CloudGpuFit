@@ -1,0 +1,20 @@
+{
+  "target_instance": "g7e.2xlarge",
+  "gpu_name": "RTX PRO 6000 Blackwell",
+  "peak_flops": 467804160000000.0,
+  "sm_count": 188,
+  "peak_bandwidth": 1597000000000.0,
+  "precision_bytes": 2,
+  "l2_cache_bytes": 134217728,
+  "t_h2d_base": 0.002477968236590966,
+  "t_d2h_base": 0.00029080707346729184,
+  "bw_h2d_GBs": 55.4963266029755,
+  "bw_d2h_GBs": 57.01994377040717,
+  "t_dispatch_light": 0.0060211700002810176,
+  "t_dispatch_heavy": 0.009572189999857983,
+  "t_sync": 0.0029510969999932968,
+  "t_python_loop": 3.528269999719669e-05,
+  "t_pytorch_overhead": 0.0,
+  "host_schedule_scale": 1.0,
+  "host_schedule_policy": "vision_conv2d"
+}

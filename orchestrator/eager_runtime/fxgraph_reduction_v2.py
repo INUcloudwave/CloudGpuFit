@@ -35,6 +35,13 @@ HARDWARE_PROFILE_FIELDS = (
     "t_pytorch_overhead",
 )
 
+OPTIONAL_HARDWARE_PROFILE_FIELDS = (
+    "t5_first_token_fidelity_ms",
+    "text_small_workload_additive_ms",
+    "text_small_workload_kernel_threshold_ms",
+    "text_small_workload_max_batch",
+)
+
 
 def apply_hardware_profile(router):
     path_value = os.environ.get("EAGER_HARDWARE_PROFILE")
@@ -53,6 +60,9 @@ def apply_hardware_profile(router):
         )
     for name in HARDWARE_PROFILE_FIELDS:
         setattr(router, name, payload[name])
+    for name in OPTIONAL_HARDWARE_PROFILE_FIELDS:
+        if name in payload:
+            setattr(router, name, payload[name])
     router.bytes_per_ms_h2d = router.bw_h2d_GBs * 1e6
     router.bytes_per_ms_d2h = router.bw_d2h_GBs * 1e6
     router.host_schedule_scale = float(payload.get("host_schedule_scale", 1.0))
@@ -121,7 +131,10 @@ def make_light_node(op_type, node, output_elements, out_shape, module=None):
 
 class FXGraphParser:
     def __init__(self):
-        print("FX Graph Parser 초기화 중 (Analytical Fusion Group  활성화)...")
+        print(
+            "🔍 FX Graph Parser 초기화 중 "
+            "(fusion pass는 engine_mode에 따라 적용)..."
+        )
         
     def trace_model(self, model, dummy_input, is_hf=False):
         model.eval()
@@ -233,7 +246,8 @@ class FXGraphParser:
                     current_op = {'type': 'Conv1d', 'M': B * L_out, 'N': C_out, 'K': K, 'kernel_size': target_module.kernel_size[0], 'Is_Conv1D': 1, 'Is_Conv2D': 0, 'Is_BMM': 0, 'Is_Fused': 0}
                 elif isinstance(target_module, nn.Linear):
                     N = target_module.out_features; K = target_module.in_features; M = elements // N 
-                    current_op = {'type': 'Linear', 'M': M, 'N': N, 'K': K, 'kernel_size': 1, 'Is_Conv1D': 0, 'Is_Conv2D': 0, 'Is_BMM': 0, 'Is_Fused': 0}
+                    is_lm_head = int("lm_head" in str(node.target).lower())
+                    current_op = {'type': 'Linear', 'M': M, 'N': N, 'K': K, 'kernel_size': 1, 'Is_Conv1D': 0, 'Is_Conv2D': 0, 'Is_BMM': 0, 'Is_Fused': 0, 'Is_LM_Head': is_lm_head}
                 # 💡 [업데이트] 이름에 "Norm"이 들어간 클래스(Qwen2RMSNorm 등)를 모두 동적으로 캡처
                 elif isinstance(target_module, (nn.ReLU, nn.ReLU6, nn.GELU, nn.BatchNorm2d, nn.MaxPool2d, nn.AdaptiveAvgPool2d)) or "Norm" in target_module.__class__.__name__:
                     current_op = make_light_node(
@@ -257,11 +271,14 @@ class FXGraphParser:
                             M, K = int(shape_a[0]), int(shape_a[1])
                             N = int(shape_b[1])
                             if int(shape_b[0]) == K:
+                                stack = getattr(node, 'meta', {}).get('nn_module_stack', {})
+                                stack_text = str(stack).lower()
                                 current_op = {
                                     'type': 'Linear', 'M': M, 'N': N, 'K': K,
                                     'kernel_size': 1, 'Is_Conv1D': 0,
                                     'Is_Conv2D': 0, 'Is_BMM': 0, 'Is_Fused': 0,
                                     'RHS_Is_Transposed': 0,
+                                    'Is_LM_Head': int('lm_head' in stack_text),
                                 }
                 elif node.target in [torch.bmm, torch.matmul, operator.matmul]:
                     if hasattr(node.args[0], 'meta') and 'tensor_meta' in node.args[0].meta:
@@ -311,7 +328,12 @@ class FXGraphParser:
 
 class SimulatorRouter:
     def __init__(self, engine_mode="eager"):
-        print(f" CloudSim Router 초기화 중 (모드: {engine_mode.upper()})...")
+        if engine_mode != "eager":
+            raise ValueError(
+                "The legacy compiled path reused Eager PKLs and is disabled. "
+                "Use the separate Inductor compiled runtime pipeline."
+            )
+        print(f"🚀 CloudSim Router 초기화 중 (모드: {engine_mode.upper()})...")
         self.engine_mode = engine_mode
         try:
             clean_mode = "eager"
@@ -459,7 +481,8 @@ class SimulatorRouter:
                 'Layer_Type': base_node['type'], 
                 'Log_Name': log_name,            
                 'Theoretical_ms': round(group_total_theo_ms, 4), 
-                'Predicted_Actual_ms': round(group_total_actual_ms, 4)
+                'Predicted_Actual_ms': round(group_total_actual_ms, 4),
+                'Is_LM_Head': int(base_node.get('Is_LM_Head', 0)),
             })
         return total_time_ms, pd.DataFrame(simulation_log)
 
@@ -602,6 +625,15 @@ def build_prediction_breakdown(
                 "Predicted_Actual_ms",
             ].sum()
         )
+
+    lm_head_mask = log_df.get(
+        "Is_LM_Head",
+        pd.Series(0, index=log_df.index),
+    ).astype(bool)
+    record["lm_head_count"] = int(lm_head_mask.sum())
+    record["lm_head_ms"] = float(
+        log_df.loc[lm_head_mask, "Predicted_Actual_ms"].sum()
+    )
 
     return record
         

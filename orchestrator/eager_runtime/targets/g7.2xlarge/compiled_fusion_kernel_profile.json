@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "target_instance": "g7.2xlarge",
+  "gpu_name": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "kernel_floor_ms": 0.001056,
+  "method": "median_small_single_inductor_kernel_duration",
+  "calibration": {
+    "dataset": "g7_compiled_fusion_pilot.csv",
+    "dataset_sha256": "85d65c4112d8c7083a59f49f8bf32a57c1351023c835bbd725e0fdae9bf0798e",
+    "roofline_threshold_ms": 1e-05,
+    "selected_rows": 5,
+    "selected_patterns": [
+      "add_relu",
+      "bias_gelu",
+      "layernorm",
+      "rmsnorm",
+      "softmax"
+    ],
+    "minimum_ms": 0.00096,
+    "maximum_ms": 0.0012474999999997
+  }
+}

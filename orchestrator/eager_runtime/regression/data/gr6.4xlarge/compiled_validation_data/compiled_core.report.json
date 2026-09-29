@@ -1,0 +1,19 @@
+{
+  "target_instance": "gr6.4xlarge",
+  "gpu_name": "NVIDIA L4",
+  "base": "compiled_validation_data/compiled_core.csv",
+  "measurements": "results/gr6_compiled_core/compiled_component_cases.csv",
+  "output": "/home/ubuntu/gr6_l4_reuse_validation/targets/gr6.4xlarge/compiled_validation_data/compiled_core.csv",
+  "rows": 54,
+  "successful_rows": 54,
+  "models": [
+    "bert",
+    "mobilenet_v2",
+    "opt",
+    "qwen2",
+    "resnet18",
+    "roberta",
+    "t5",
+    "wav2vec2"
+  ]
+}

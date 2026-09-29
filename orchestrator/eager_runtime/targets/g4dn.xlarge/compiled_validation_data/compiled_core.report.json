@@ -1,0 +1,19 @@
+{
+  "target_instance": "g4dn.xlarge",
+  "gpu_name": "Tesla T4",
+  "base": "compiled_validation_data/compiled_core.csv",
+  "measurements": "results/g4dn_compiled_components_core_v12/compiled_component_cases.csv",
+  "output": "/home/ubuntu/g4dn_compiled_fusion/targets/g4dn.xlarge/compiled_validation_data/compiled_core.csv",
+  "rows": 54,
+  "successful_rows": 54,
+  "models": [
+    "bert",
+    "mobilenet_v2",
+    "opt",
+    "qwen2",
+    "resnet18",
+    "roberta",
+    "t5",
+    "wav2vec2"
+  ]
+}

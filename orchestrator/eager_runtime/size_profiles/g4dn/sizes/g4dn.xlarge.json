@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "instance_type": "g4dn.xlarge",
+  "gpu_family": "g4dn",
+  "vcpu": 4,
+  "ram_gib": null,
+  "spec_source": {
+    "vcpu": "CloudGPUFit instance_filter.SUPPORTED_GPU_INSTANCES (EC2 DescribeInstanceTypes)",
+    "ram_gib": "not recorded yet - fill from EC2 DescribeInstanceTypes"
+  },
+  "overheads": {
+    "t_h2d_base": 0.002685997131932183,
+    "t_d2h_base": 0.0033327554189881425,
+    "bw_h2d_GBs": 6.266315351494251,
+    "bw_d2h_GBs": 6.602169103316281,
+    "t_dispatch_light": 0.010553609999988112,
+    "t_dispatch_heavy": 0.022555470000042988,
+    "t_sync": 0.005491271999972014,
+    "t_python_loop": 7.221180001124593e-05
+  },
+  "compiled_context_calibration": null,
+  "calibration_files": {
+    "p90_calibration_factor": "inherit_base",
+    "first_token_calibration": "inherit_base"
+  },
+  "provenance": {
+    "status": "measured",
+    "source": "targets/g4dn.xlarge/hardware_profile.json (directly calibrated base target)"
+  },
+  "role": "gpu_base"
+}

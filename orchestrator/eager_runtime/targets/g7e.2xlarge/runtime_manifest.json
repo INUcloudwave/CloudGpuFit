@@ -1,0 +1,121 @@
+{
+  "schema_version": 2,
+  "predictor_version": "eager_v6_first_token_structural",
+  "target_instance": "g7e.2xlarge",
+  "mode": "eager",
+  "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "environment": {
+    "EAGER_BASE_MODEL_DIR": ".",
+    "CACHE_MODEL_DIR": "cache_model",
+    "MEMORY_MODEL_DIR": "memory_model",
+    "SDPA_MODEL_DIR": "sdpa_model",
+    "POINTWISE_MODEL_DIR": "pointwise_model_v4",
+    "LINEAR_CONTEXT_MODEL_DIR": "linear_context_model_deep_v2",
+    "CONV1D_MODEL_DIR": "conv1d_model",
+    "EAGER_P90_CALIBRATION_FILE": "p90_calibration_factor.json",
+    "EAGER_HARDWARE_PROFILE": "hardware_profile.json",
+    "EAGER_FIRST_TOKEN_CALIBRATION_FILE": "first_token_calibration.json"
+  },
+  "artifacts": [
+    {
+      "path": "cache_model/gemm_cache_eager_90th.pkl",
+      "size_bytes": 1685643,
+      "sha256": "de15d14ed0629cd6f6925cdda6a81fc7faff404954a2ec84a7cfec5610585411"
+    },
+    {
+      "path": "cache_model/gemm_cache_eager_median.pkl",
+      "size_bytes": 1664202,
+      "sha256": "f5b77b72fe382e07cebd311579ecbbc5945abccdcd3533da652fc8b054df33e5"
+    },
+    {
+      "path": "conv1d_model/conv1d_eager_90th.pkl",
+      "size_bytes": 4482163,
+      "sha256": "59bf9781f430ade7e9ba1a0319e48151696d1c096fe0b02c73d88315085e305a"
+    },
+    {
+      "path": "conv1d_model/conv1d_eager_median.pkl",
+      "size_bytes": 4051634,
+      "sha256": "c92e4fa533c547ebbc1bbff02a2a5d9a1518f6d9b944bfa56800159846643e00"
+    },
+    {
+      "path": "gemm_eager_90th.pkl",
+      "size_bytes": 1713458,
+      "sha256": "e35b97ca722b6e376f19e4723fa3ac9c47699bb3886983746c59535f25dce78b"
+    },
+    {
+      "path": "gemm_eager_median.pkl",
+      "size_bytes": 1676324,
+      "sha256": "cd2f8453b9fd3481fbe9426d4445e654a8a0fdf189f2129019a3e054e98aa2fb"
+    },
+    {
+      "path": "hardware_profile.json",
+      "size_bytes": 640,
+      "sha256": "db70d09c10b41d8c84fb22becf5b2c3866d5f328eb7241225bc856a32ea89191"
+    },
+    {
+      "path": "linear_context_model_deep_v2/gemm_context_global_eager_90th.pkl",
+      "size_bytes": 1760627,
+      "sha256": "52bfa5abfd91374a6dde26fe98f16059b426a8821e406ce1ba275a4d6d27dd5d"
+    },
+    {
+      "path": "linear_context_model_deep_v2/gemm_context_global_eager_median.pkl",
+      "size_bytes": 1621388,
+      "sha256": "2ce33d681eaefca62788cdba400d5ab6258ebb0f75b4df1f84c723706f0799eb"
+    },
+    {
+      "path": "linear_context_model_deep_v2/transformer_linear_eager_90th.pkl",
+      "size_bytes": 1676669,
+      "sha256": "d2361b3611315d6ef6fa64124ee3daa2a1d73bb44bd577222cc0b1fe69ac82ac"
+    },
+    {
+      "path": "linear_context_model_deep_v2/transformer_linear_eager_median.pkl",
+      "size_bytes": 1576183,
+      "sha256": "cfcb7bc3abd1f65b7b7691ce69f5caa2724fd073d036dabb2cd0e6fc1cd19943"
+    },
+    {
+      "path": "memory_model/memory_eager_90th.pkl",
+      "size_bytes": 1676176,
+      "sha256": "ffa7a055ffe2712dacd60868595873e654f9c3b403c34eaaf962ae5372656813"
+    },
+    {
+      "path": "memory_model/memory_eager_median.pkl",
+      "size_bytes": 3722023,
+      "sha256": "46dcd1a211b329519d6d3678a63ee39b8b17cf2675cd71847d4b9a5d3e2ff98c"
+    },
+    {
+      "path": "p90_calibration_factor.json",
+      "size_bytes": 327,
+      "sha256": "d125c1eb02aa6bc698d0609aad971da27a65c813cda67fcbc89a97a4cf3752d9"
+    },
+    {
+      "path": "pointwise_model_v4/pointwise_eager_90th.pkl",
+      "size_bytes": 3269939,
+      "sha256": "e376c8e16e12bfc926502caa4941ee10f3d1a23e9807c824e5eef4b9a4483cda"
+    },
+    {
+      "path": "pointwise_model_v4/pointwise_eager_median.pkl",
+      "size_bytes": 8716198,
+      "sha256": "ad7745f34a3590cf83528a8ed55ec56c05b6e824aea8111173e1f19b8fafed2e"
+    },
+    {
+      "path": "reduction_eager_90th.pkl",
+      "size_bytes": 1534417,
+      "sha256": "94151592e67959ca6667c6ecfc365c9377eaba608804d20f8d7caf9a3c715ca0"
+    },
+    {
+      "path": "reduction_eager_median.pkl",
+      "size_bytes": 1295504,
+      "sha256": "63b112779e755b9efd6e3685f346077c3a5c6db9c2629380560753345a9d4cdc"
+    },
+    {
+      "path": "sdpa_model/sdpa_eager_90th.pkl",
+      "size_bytes": 2406085,
+      "sha256": "f8021143a2a77000efba4536c52097de355206907f63c20fe5b8a8ba8925eadd"
+    },
+    {
+      "path": "sdpa_model/sdpa_eager_median.pkl",
+      "size_bytes": 2321655,
+      "sha256": "7ae259c40f7e451b979003a12c8623d3a211a5b2f1e21768fc171c65b2200b18"
+    }
+  ]
+}

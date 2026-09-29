@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "gpu_family": "g7e",
+  "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "gpu_base_target": "g7e.2xlarge",
+  "description": "GPU kernel-time models (NVIDIA RTX PRO 6000 Blackwell Server Edition) shared by every g7e size; only host-side overheads differ per size."
+}

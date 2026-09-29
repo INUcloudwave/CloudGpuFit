@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "predictor_version": "eager_v4",
+  "predictor_version": "eager_v6_first_token_structural",
   "target_instance": "g4dn.xlarge",
   "mode": "eager",
   "gpu_name": "Tesla T4",
@@ -13,26 +13,27 @@
     "LINEAR_CONTEXT_MODEL_DIR": "linear_context_model_deep_v2",
     "CONV1D_MODEL_DIR": "conv1d_model",
     "EAGER_P90_CALIBRATION_FILE": "p90_calibration_factor.json",
-    "EAGER_HARDWARE_PROFILE": "hardware_profile.json"
+    "EAGER_HARDWARE_PROFILE": "hardware_profile.json",
+    "EAGER_FIRST_TOKEN_CALIBRATION_FILE": "first_token_calibration.json"
   },
   "artifacts": [
     {
-      "path": "cache_model\\gemm_cache_eager_90th.pkl",
+      "path": "cache_model/gemm_cache_eager_90th.pkl",
       "size_bytes": 1682537,
       "sha256": "03ffffc31942f03e054b0b2c92d49740475724b3e848ad784890e84eddeef372"
     },
     {
-      "path": "cache_model\\gemm_cache_eager_median.pkl",
+      "path": "cache_model/gemm_cache_eager_median.pkl",
       "size_bytes": 1669504,
       "sha256": "869b6a7942c9de1d19b7a34f55c15029843105f955c0aedcef93a21bb41ec2a0"
     },
     {
-      "path": "conv1d_model\\conv1d_eager_90th.pkl",
+      "path": "conv1d_model/conv1d_eager_90th.pkl",
       "size_bytes": 4025598,
       "sha256": "ebc08d3f9649a4dfde904723c808f2f431e9496e7f539ad7fb96925584af1b88"
     },
     {
-      "path": "conv1d_model\\conv1d_eager_median.pkl",
+      "path": "conv1d_model/conv1d_eager_median.pkl",
       "size_bytes": 3791233,
       "sha256": "84f1a3b24d8b28acc2e4334464fe08bf0d708769913ce256a60682e3641eea4d"
     },
@@ -52,32 +53,32 @@
       "sha256": "bb2edb3defda58a4e1af0f3295ce9014fc91be2c3a798dafd133685d40d8dde6"
     },
     {
-      "path": "linear_context_model_deep_v2\\gemm_context_global_eager_90th.pkl",
+      "path": "linear_context_model_deep_v2/gemm_context_global_eager_90th.pkl",
       "size_bytes": 1718914,
       "sha256": "710ab9859a43bf9d89a1625e79c70391ae2bea09b00b36103fd9a516029ff87d"
     },
     {
-      "path": "linear_context_model_deep_v2\\gemm_context_global_eager_median.pkl",
+      "path": "linear_context_model_deep_v2/gemm_context_global_eager_median.pkl",
       "size_bytes": 1603629,
       "sha256": "505a3852b0d92f0a7ea6679539a21a9c85f549aebcafa4b28891ac06118c85e2"
     },
     {
-      "path": "linear_context_model_deep_v2\\transformer_linear_eager_90th.pkl",
+      "path": "linear_context_model_deep_v2/transformer_linear_eager_90th.pkl",
       "size_bytes": 1673244,
       "sha256": "06659282d5540d6e291f0b12fc110abed3b6e6462a76e710fd47191cd2ad02c3"
     },
     {
-      "path": "linear_context_model_deep_v2\\transformer_linear_eager_median.pkl",
+      "path": "linear_context_model_deep_v2/transformer_linear_eager_median.pkl",
       "size_bytes": 1516206,
       "sha256": "cb1a92d802b33474878f2a6bea6f08f831844265bc34b48b717b7df19dbef66f"
     },
     {
-      "path": "memory_model\\memory_eager_90th.pkl",
+      "path": "memory_model/memory_eager_90th.pkl",
       "size_bytes": 1109783,
       "sha256": "51bb5a8f06c6bb4e0af4f5cfe13e3033a97c4198f3872edade33aa65a6da2420"
     },
     {
-      "path": "memory_model\\memory_eager_median.pkl",
+      "path": "memory_model/memory_eager_median.pkl",
       "size_bytes": 3576817,
       "sha256": "f65f161d8d0fcda8a176d0b0bb91294ba48edd9c63434274f2d8223615000244"
     },
@@ -87,12 +88,12 @@
       "sha256": "2c890d33b1046d23b72cdb9204576e9fa78b09b447dd5593e75f08bcdf01a30c"
     },
     {
-      "path": "pointwise_model_v4\\pointwise_eager_90th.pkl",
+      "path": "pointwise_model_v4/pointwise_eager_90th.pkl",
       "size_bytes": 3557124,
       "sha256": "212d57c37b1edde0f740fc3536ed725dda4f389cd20c70a64a87e85d4e86c1e0"
     },
     {
-      "path": "pointwise_model_v4\\pointwise_eager_median.pkl",
+      "path": "pointwise_model_v4/pointwise_eager_median.pkl",
       "size_bytes": 8720084,
       "sha256": "670fd2be34a1585281ec80e490802900214638a8aeafa3f99630a2a583d54034"
     },
@@ -107,12 +108,12 @@
       "sha256": "f22e52f006899bbac4cbd91a7fdc25dad5f6cb59d490c49c0393d95fb1b08ad7"
     },
     {
-      "path": "sdpa_model\\sdpa_eager_90th.pkl",
+      "path": "sdpa_model/sdpa_eager_90th.pkl",
       "size_bytes": 2550398,
       "sha256": "79b308722a8f243a1856550c5563273ca90aca98a92d7d89ebabdcf0bf8a0682"
     },
     {
-      "path": "sdpa_model\\sdpa_eager_median.pkl",
+      "path": "sdpa_model/sdpa_eager_median.pkl",
       "size_bytes": 2274356,
       "sha256": "cbd8a1b42a0f5e0fe451aaca207d74b65b9b43b4770647679bee872e7c442910"
     }

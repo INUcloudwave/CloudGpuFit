@@ -103,7 +103,7 @@ class CacheAwareSimulatorRouter(base.SimulatorRouter):
             )
 
         print(
-            f" CloudSim Router 초기화 중 "
+            f"🚀 CloudSim Router 초기화 중 "
             f"(모드: {engine_mode.upper()}, CACHE-AWARE)..."
         )
         self.engine_mode = engine_mode

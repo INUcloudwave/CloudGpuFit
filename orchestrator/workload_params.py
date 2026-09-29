@@ -19,6 +19,9 @@ PARAM_SPEC: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"encoder_seq_len", "decoder_seq_len"}),
         frozenset({"mode", "max_new_tokens"}),
     ),
+    # Wav2Vec2/HuBERT-style encoder-only: one forward pass over raw audio
+    # samples (16 kHz -> 32000 = 2 s). No generation step exists.
+    "audio_encoder": (frozenset({"audio_samples"}), frozenset({"mode"})),
 }
 
 MODES = frozenset({"prefill", "generate"})
@@ -55,6 +58,9 @@ def validate_params(workload_type: str, params: dict[str, Any]) -> None:
         # doesn't sail through as 1.
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"params.{key}는 양의 정수여야 합니다 (받은 값: {value!r})")
+
+    if workload_type == "audio_encoder" and supplied.get("mode") == "generate":
+        raise ValueError("type=audio_encoder는 생성 단계가 없어 mode=prefill만 가능합니다")
 
     if supplied.get("mode") == "generate" and "max_new_tokens" not in supplied:
         raise ValueError("mode=generate일 때는 params.max_new_tokens가 필요합니다")

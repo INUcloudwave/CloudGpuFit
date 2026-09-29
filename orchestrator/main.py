@@ -4,12 +4,13 @@ model into host RAM to profile it, so two runs at once tend to OOM each
 other. A single asyncio worker task enforces that; there is no external
 queue system.
 
-Since CLAUDE_HANDOFF_CLOUDGPUFIT_EAGER_RUNTIME.md's integration: after a
-VRAM prediction succeeds, process_job() also (1) filters AWS single-GPU
-G-series instances down to ones that fit the predicted VRAM/region/budget
-and have an installed eager_runtime target, then (2) asks eager_runtime for
-Eager FP16 Median/P90 on each of those candidates. eager_runtime is
-imported directly in-process (no dedicated Runtime HTTP server, per §1).
+After a VRAM prediction succeeds, process_job() also (1) filters AWS
+single-GPU instances down to ones that fit the predicted VRAM/region/budget
+AND have their own eager_runtime target (7 today: g4dn.xlarge, g5.xlarge,
+g6.xlarge, g6e.xlarge, g7.2xlarge, g7e.2xlarge, gr6.4xlarge), then (2) asks
+eager_runtime for FP16 Median/P90 on each of those candidates, in the job's
+engine_mode ("eager" default, or "compiled"). eager_runtime is imported
+directly in-process (no dedicated Runtime HTTP server).
 """
 
 import asyncio
@@ -30,7 +31,6 @@ import aws_pricing
 import db
 import setup_manager
 from cache_key import pipeline_cache_key_for
-from eager_runtime import available_targets
 from instance_catalog import catalog_version, load_instance_catalog
 from instance_filter import filter_instances
 from runtime_adapter import predict_candidate_runtimes
@@ -45,9 +45,10 @@ app = FastAPI(title="CloudGPUFit Orchestrator")
 job_queue: "asyncio.Queue[str]" = asyncio.Queue()
 setup_lock = asyncio.Lock()
 
-# Every type here now has a real dataset/loop on the VRAM side and an
-# adapter on the Runtime side, so the two stages finally agree.
-SUPPORTED_TYPES = {"decoder_llm", "vision_cls", "text_encdec"}
+# Workload types the Runtime side predicts. audio_encoder (Wav2Vec2/HuBERT
+# encoder-only) is supported by eager_runtime; its VRAM-side support
+# (predict_vram.py) and web form are owned by the VRAM/web side.
+SUPPORTED_TYPES = {"decoder_llm", "vision_cls", "text_encdec", "audio_encoder"}
 CONTAINER_NAME = "xmem-cpu"
 EAGER_RUNTIME_ROOT = Path(__file__).parent / "eager_runtime"
 
@@ -79,6 +80,12 @@ class JobCreate(BaseModel):
     params: dict[str, Any]
     deployment: DeploymentIn
     warnings: list[str] = []
+    # engine_mode is eager_runtime's own concept (predict_runtime.py's
+    # engine_mode dispatch, added alongside the Compiled/Inductor predictor),
+    # not part of the original CLAUDE_HANDOFF payload shape. Defaulting to
+    # "eager" here means any client that hasn't been updated to send this
+    # field yet keeps getting exactly the pre-Compiled behavior.
+    engine_mode: Literal["eager", "compiled"] = "eager"
 
     @model_validator(mode="after")
     def _check_params(self) -> "JobCreate":
@@ -160,6 +167,12 @@ async def process_job(job_id: str) -> None:
     # Each set_progress() call here marks a real code transition, not a
     # timer-driven guess -- there is no step between these two calls slow
     # enough to deserve its own phase (filter_instances is in-memory).
+    # engine_mode picks which eager_runtime predictor (Eager or Compiled)
+    # answers this job; defaults to "eager" for any payload written before
+    # this field existed (old queued rows, or a client that hasn't been
+    # updated yet) so behavior for those is unchanged.
+    engine_mode = str(payload.get("engine_mode") or "eager")
+
     db.set_progress(job_id, "AWS GPU 인스턴스 정보 조회 및 후보 필터링 중…")
     deployment = payload.get("deployment") or {}
     aws_region = deployment.get("aws_region")
@@ -177,7 +190,9 @@ async def process_job(job_id: str) -> None:
         aws_region=aws_region,
         budget_usd_per_hour=deployment.get("budget_usd_per_hour"),
         instance_catalog=instance_catalog,
-        installed_targets=available_targets(),
+        # Candidates are only instances with their own target for the
+        # job's engine_mode -- never a proxy for an unmeasured size.
+        engine_mode=engine_mode,
     )
 
     db.set_progress(job_id, "후보 인스턴스별 성능 예측 중…")
@@ -185,12 +200,14 @@ async def process_job(job_id: str) -> None:
         predict_candidate_runtimes,
         payload,
         [candidate["instance_type"] for candidate in candidates],
+        engine_mode,
     )
 
     result = {
         "vram": vram_outcome.result,
         "candidates": candidates,
         "catalog_error": catalog_error,
+        "engine_mode": engine_mode,
         "runtime": runtime_result,
     }
     db.mark_finished(job_id, "succeeded", result=result)

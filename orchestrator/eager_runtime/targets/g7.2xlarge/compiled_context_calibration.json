@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "target_instance": "g7.2xlarge",
+  "engine_mode": "compiled",
+  "calibration_scope": "global_structural_context",
+  "calibration_dataset": "compiled_core",
+  "calibration_rows": 54,
+  "kernel_scale": 1.0267987605925104,
+  "external_launch_ms": 0.00401812269858878,
+  "fusion_launch_ms": 0.0,
+  "fixed_overhead_ms": 0.3194684646976781,
+  "model_specific": false,
+  "model_name_is_feature": false,
+  "holdout_datasets": [
+    "compiled_encoder_seq512",
+    "compiled_longseq"
+  ]
+}

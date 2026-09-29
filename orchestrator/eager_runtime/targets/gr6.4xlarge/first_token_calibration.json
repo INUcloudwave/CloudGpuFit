@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "target_instance": "gr6.4xlarge",
+  "gpu_name": "NVIDIA L4",
+  "mode": "eager",
+  "scope": "first_token_logits",
+  "fit_sequence_lengths": [
+    64,
+    256
+  ],
+  "holdout_sequence_length": 128,
+  "rules": [
+    {
+      "name": "decoder_large_lm_head",
+      "workload_type": "decoder_llm",
+      "min_lm_head_ms": 1.0,
+      "calibrated_batch_sizes": [
+        1,
+        8,
+        16
+      ],
+      "min_calibrated_sequence_length": 64,
+      "max_calibrated_sequence_length": 256,
+      "method": "scale",
+      "scale": 0.7441045977593832,
+      "holdout_mape_percent": 1.0729882709825347
+    }
+  ],
+  "notes": [
+    "Rules match workload structure, not model name or exact model configuration.",
+    "Sequence lengths outside 64-256 remain executable but are extrapolated."
+  ]
+}

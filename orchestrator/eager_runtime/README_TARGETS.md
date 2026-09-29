@@ -1,98 +1,137 @@
-Target-aware Eager Runtime
+Target-aware Eager / Compiled Runtime
+
+Installed targets (both engine modes)
+
+| instance_type | GPU | Eager | Compiled | Notes |
+|---|---|---|---|---|
+| g4dn.xlarge | Tesla T4 | yes | yes | |
+| g5.xlarge | NVIDIA A10G | yes | yes | |
+| g6.xlarge | NVIDIA L4 | yes | yes | GPU base for the L4 size family |
+| g6e.xlarge | NVIDIA L40S | yes | yes | |
+| g7.2xlarge | RTX PRO 4500 Blackwell | yes | yes | Compiled context calibration; Eager P90 not E2E-calibrated yet |
+| g7e.2xlarge | RTX PRO 6000 Blackwell | yes | yes | Compiled context calibration |
+| gr6.4xlarge | NVIDIA L4 | yes | yes | Size target: L4 kernel models shared from g6.xlarge; its Compiled context calibration was rejected and is not used |
+
+Prediction scope (`prediction_scope` in every result), per workload:
+
+| workload_type | prediction_scope | covers |
+|---|---|---|
+| decoder_llm, text_encdec | first_token_logits | prefill + LM head up to the first generated token's logits (no decode loop) |
+| vision_cls | classification_forward | one classification forward pass |
+| text_encoder | encoder_forward | one encoder forward pass |
+| audio_encoder | audio_encoder_forward | one Wav2Vec2/HuBERT-style encoder forward pass |
+
+Median (`predicted_median_ms`) is the official number; Compiled P90 is diagnostic.
 
 Directory layout
 
 eager_runtime/
-├── predict_eager_runtime.py
-├── run_eager_local.py
-├── runtime_manifest.py
-├── fxgraph_*.py
+├── __init__.py                  public API (predict_runtime, predict_runtime_targets, available_targets)
+├── predict_runtime.py           engine_mode / instance_type dispatcher
+├── predict_eager_runtime.py     Eager predictor
+├── predict_compiled_runtime.py  Compiled (torch.compile / Inductor) predictor
+├── build_size_target.py         builds size targets from size_profiles/
+├── size_profiles/               GPU family -> base target, per-size overhead profiles
+├── regression/                  official E2E baselines, measured data, regression runner
 └── targets/
-    └── g6.xlarge/
-        ├── runtime_manifest.json
-        ├── hardware_profile.json
-        ├── p90_calibration_factor.json
-        ├── gemm_eager_median.pkl
-        ├── gemm_eager_90th.pkl
-        ├── reduction_eager_median.pkl
-        ├── reduction_eager_90th.pkl
-        ├── cache_model/
-        ├── conv1d_model/
-        ├── linear_context_model_deep_v2/
-        ├── memory_model/
-        ├── pointwise_model_v4/
-        └── sdpa_model/
+    ├── g6.xlarge/               full target: GPU kernel models + size-level files
+    │   ├── runtime_manifest.json          Eager artifacts (size + sha256 pinned)
+    │   ├── hardware_profile.json          GPU specs + host overheads
+    │   ├── p90_calibration_factor.json
+    │   ├── first_token_calibration.json   (optional)
+    │   ├── *.pkl, cache_model/, sdpa_model/, ...          Eager kernel models
+    │   ├── compiled_external_model/       Compiled external-kernel LightGBM models + manifest
+    │   ├── compiled_fusion_model/         Compiled fusion-group LightGBM models + manifest
+    │   └── compiled_context_calibration.json   (optional, model-independent)
+    └── gr6.4xlarge/             size target: only size-level files; GPU artifacts
+                                 referenced from ../g6.xlarge/ and sha256-pinned
 
-The artifact names are GPU-neutral. The containing target directory identifies
-the instance profile for which they were measured and trained.
+Predict
 
-Validate the packaged g6.xlarge profile on a CPU computer
+from eager_runtime import predict_runtime, predict_runtime_targets, available_targets
 
-python runtime_manifest.py \
-  --target g6.xlarge \
-  --check targets/g6.xlarge/runtime_manifest.json \
-  --skip-gpu-check
+# keyword style
+result = predict_runtime(
+    model="facebook/opt-125m",
+    instance_type="g6.xlarge",
+    engine_mode="compiled",        # default "eager"
+    batch_size=8,
+    sequence_length=128,
+)
 
-Predict from a request
-
-python predict_eager_runtime.py \
-  --target g6.xlarge \
-  --request request.json
-
---manifest is optional. When omitted, the selected path is automatically:
-
-targets/<target>/runtime_manifest.json
-
-Import from another backend
-
-Import the package from the directory containing eager_runtime/:
-
-from eager_runtime import predict_runtime
-
+# request-dict style (CloudGPUFit's existing call keeps working unchanged)
 request = {
     "model": "facebook/opt-125m",
+    "instance_type": "g6.xlarge",  # "target_instance" is accepted too
+    "engine_mode": "eager",
     "dtype": "fp16",
     "batch_size": 1,
     "params": {"seq_len": 128},
 }
+result = predict_runtime(request)
+result = predict_runtime(request, target="g6.xlarge")   # old positional form
 
-result = predict_runtime(request, target="g6.xlarge")
+# instances that passed the VRAM filter, one engine mode for all
+result = predict_runtime_targets(request, targets=["g5.xlarge", "g6.xlarge"], engine_mode="compiled")
 
-Predict only the instances that passed the VRAM filter:
+available_targets()                       # Eager targets
+available_targets(engine_mode="compiled") # Compiled targets
 
-from eager_runtime import predict_runtime_targets
+Selection and safety
 
-result = predict_runtime_targets(
-    request,
-    targets=["g4dn.xlarge", "g5.xlarge", "g6.xlarge", "g6e.xlarge"],
-)
+- instance_type picks targets/<instance_type>/. If it is not installed for the
+  requested engine_mode the call returns a structured error listing the
+  installed targets -- it never falls back to another GPU's artifacts.
+- Every prediction validates runtime_manifest.json (target name, file size and
+  sha256 of every artifact). Compiled manifests are validated the same way.
+- Eager and Compiled results share one format: status, model, workload_type,
+  instance_type, target_gpu, engine_mode, predicted_median_ms,
+  raw_predicted_median_ms, predicted_p90_ms, predicted_throughput_rps,
+  official_estimate, p90_status, profile_provenance, prediction_scope,
+  warnings, breakdown. Compiled adds its compile_* settings.
+- profile_provenance says where the target's host-overhead numbers come from:
+  measured / interpolated / extrapolated. It is metadata only.
 
-Use available_targets() to list locally installed target profiles. API errors
-are returned as structured dictionaries by default. Pass raise_on_error=True
-when the caller should handle Python exceptions directly.
+Add a new GPU (new target)
 
-Run the fixed regression models
+Create targets/<instance_type>/ with the same generic artifact filenames and
+its runtime_manifest.json (python runtime_manifest.py --target <instance> on
+the matching GPU instance). Add compiled_external_model/ and
+compiled_fusion_model/ for Compiled. The directory is picked up automatically
+by available_targets() -- no code change. Never reuse another GPU's kernel
+models, hardware profile or P90 factor.
 
-python run_eager_local.py \
-  --target g6.xlarge \
-  --models ResNet-18,BERT-Base \
-  --batch-sizes 1
+Add another size of an existing GPU (g6.2xlarge, g6.4xlarge, ...)
 
-Add another GPU target
+Instances with the same GPU share the GPU kernel-time models; only host-side
+overheads differ. Do not scale the whole GPU latency by vCPU count.
 
-Create targets/<instance>/ with the same generic artifact filenames.
+size_profiles/<gpu_family>/family.json             GPU name + base target (e.g. g6 -> g6.xlarge)
+size_profiles/<gpu_family>/sizes/<instance>.json   one size: vcpu, ram_gib, overheads, provenance
 
-Add that target's hardware_profile.json.
+A size profile carries: vcpu, ram_gib, H2D/D2H base latency and bandwidth,
+dispatch light/heavy, synchronization, Python loop overhead, the Compiled
+fixed overhead (compiled_context_calibration: null, "inherit_base" or values),
+and provenance.status (measured / interpolated / extrapolated; the latter two
+must list their measured basis sizes). Then:
 
-Add that target's p90_calibration_factor.json.
+python build_size_target.py --profile size_profiles/g6/sizes/g6.2xlarge.json
 
-Generate its manifest on the matching GPU instance:
+This writes a thin targets/g6.2xlarge/ whose manifests point at the base's GPU
+artifacts (sha256-pinned) and whose hardware_profile.json takes only the
+overhead fields from the size profile. If the base target is retrained, the
+thin target fails validation until it is rebuilt. The builder refuses to
+overwrite a full, directly calibrated target.
 
-python runtime_manifest.py --target <instance>
+size_profiles/*/sizes/<base>.json documents each base size (measured) and is
+not built.
 
-Copy the complete target directory to the CPU prediction package and run
-predict_eager_runtime.py --target <instance> ....
+Regression tests
 
-Do not reuse the g6.xlarge PKLs, hardware profile, or P90 factor for another
-GPU target. The folder structure is reusable; the learned artifacts and measured
-hardware values are target-specific.
+python regression/run_regression.py          # 7 targets x 2 modes x 5 workloads smoke suite (~3 min)
+python regression/run_regression.py --full   # + re-run each target's official 78-case E2E validation
+
+The full suite compares overall MAPE and bias with the official final E2E
+summaries in regression/baselines/<instance>/ (tolerance 0.05 pp).
+regression/baselines/gr6.4xlarge/diagnostics/ keeps the rejected gr6 Compiled
+context calibration for diagnosis only; nothing loads it.

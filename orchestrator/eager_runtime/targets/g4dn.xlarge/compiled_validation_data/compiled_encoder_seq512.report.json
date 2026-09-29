@@ -1,0 +1,13 @@
+{
+  "target_instance": "g4dn.xlarge",
+  "gpu_name": "Tesla T4",
+  "base": "compiled_validation_data/compiled_encoder_seq512.csv",
+  "measurements": "results/g4dn_compiled_components_holdout_v1/compiled_component_cases.csv",
+  "output": "/home/ubuntu/g4dn_compiled_fusion/targets/g4dn.xlarge/compiled_validation_data/compiled_encoder_seq512.csv",
+  "rows": 6,
+  "successful_rows": 6,
+  "models": [
+    "bert",
+    "roberta"
+  ]
+}

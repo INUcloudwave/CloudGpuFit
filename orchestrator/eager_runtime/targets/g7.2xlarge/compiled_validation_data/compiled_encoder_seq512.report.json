@@ -1,0 +1,13 @@
+{
+  "target_instance": "g7.2xlarge",
+  "gpu_name": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "base": "compiled_validation_data/compiled_encoder_seq512.csv",
+  "measurements": "results/g7_compiled_components_holdout_fast/compiled_component_cases.csv",
+  "output": "/home/ubuntu/g7_compiled_fusion/targets/g7.2xlarge/compiled_validation_data/compiled_encoder_seq512.csv",
+  "rows": 6,
+  "successful_rows": 6,
+  "models": [
+    "bert",
+    "roberta"
+  ]
+}

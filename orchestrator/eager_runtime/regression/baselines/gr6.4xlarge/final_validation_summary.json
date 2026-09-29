@@ -1,0 +1,28 @@
+{
+  "target_instance": "gr6.4xlarge",
+  "reuse_source": "g6.xlarge",
+  "gpu_model": "NVIDIA L4",
+  "eager": {
+    "rows": 78,
+    "mape_percent": 16.146603557012593,
+    "median_ape_percent": 11.641197074229128,
+    "p90_ape_percent": 36.03495492877992,
+    "max_ape_percent": 54.07699313449042,
+    "mean_bias_percent": 8.831238843967828,
+    "p90_coverage": 0.9358974358974359
+  },
+  "compiled": {
+    "rows": 78,
+    "mape_percent": 12.755292055569017,
+    "median_ape_percent": 10.83789300544961,
+    "p90_ape_percent": 27.179999125880816,
+    "max_ape_percent": 47.01548340817658,
+    "mean_bias_percent": -3.0649853207705497,
+    "p90_coverage": 0.5128205128205128
+  },
+  "acceptance_gate": {
+    "mape_percent_max": 20.0,
+    "absolute_bias_percent_max": 15.0,
+    "passed": true
+  }
+}

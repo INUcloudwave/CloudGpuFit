@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "predictor_version": "eager_v4",
+  "predictor_version": "eager_v6_first_token_structural",
   "target_instance": "g6.xlarge",
   "mode": "eager",
   "gpu_name": "NVIDIA L4",
@@ -13,7 +13,8 @@
     "LINEAR_CONTEXT_MODEL_DIR": "linear_context_model_deep_v2",
     "CONV1D_MODEL_DIR": "conv1d_model",
     "EAGER_P90_CALIBRATION_FILE": "p90_calibration_factor.json",
-    "EAGER_HARDWARE_PROFILE": "hardware_profile.json"
+    "EAGER_HARDWARE_PROFILE": "hardware_profile.json",
+    "EAGER_FIRST_TOKEN_CALIBRATION_FILE": "first_token_calibration.json"
   },
   "artifacts": [
     {
@@ -37,6 +38,11 @@
       "sha256": "4d718224f150afd2bcc78a9407e32c632e26f29b8134938c00113463d4228ff0"
     },
     {
+      "path": "first_token_calibration.json",
+      "size_bytes": 768,
+      "sha256": "a2f7f1d07518df33d98125e6cc861a0e72f96a1b90cf1cbab91c6fd53a0011b4"
+    },
+    {
       "path": "gemm_eager_90th.pkl",
       "size_bytes": 1650016,
       "sha256": "2f746081954c2849e6a696709c5847a90bab2fbb09e01597dfcd51fba4805bfb"
@@ -48,8 +54,8 @@
     },
     {
       "path": "hardware_profile.json",
-      "size_bytes": 516,
-      "sha256": "1c7a31819112f181ae1f1ab1877907b48a9d7f1024e873dd754a3a02c511f87f"
+      "size_bytes": 698,
+      "sha256": "98e1035a54bf8412c156fe6129ae0444c106568bf19b47af87c99aba83d0996f"
     },
     {
       "path": "linear_context_model_deep_v2/gemm_context_global_eager_90th.pkl",

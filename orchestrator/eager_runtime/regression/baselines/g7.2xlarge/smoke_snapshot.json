@@ -1,0 +1,48 @@
+{
+  "request": {
+    "model": "facebook/opt-125m",
+    "type": "decoder_llm",
+    "dtype": "fp16",
+    "batch_size": 4,
+    "params": {
+      "mode": "prefill",
+      "seq_len": 128
+    },
+    "model_config": {
+      "model_type": "opt",
+      "architectures": [
+        "OPTForCausalLM"
+      ],
+      "hidden_size": 768,
+      "num_hidden_layers": 12,
+      "num_attention_heads": 12,
+      "ffn_dim": 3072,
+      "vocab_size": 50272,
+      "max_position_embeddings": 2048,
+      "word_embed_proj_dim": 768
+    }
+  },
+  "results": {
+    "eager": {
+      "predicted_median_ms": 3.460600361299805,
+      "predicted_p90_ms": 3.9197003612997965
+    },
+    "compiled": {
+      "predicted_median_ms": 2.6122178568731678,
+      "predicted_p90_ms": 2.7101194409732097
+    }
+  },
+  "workloads": {
+    "decoder_llm/eager": 3.206098512166353,
+    "decoder_llm/compiled": 2.1382753072739775,
+    "text_encoder/eager": 2.510011115567195,
+    "text_encoder/compiled": 1.8708247771315043,
+    "text_encdec/eager": 7.257062291572981,
+    "text_encdec/compiled": 1.561833923162274,
+    "audio_encoder/eager": 1.9993484322801298,
+    "audio_encoder/compiled": 1.9198992767731506,
+    "vision_cls/eager": 0.960544943843764,
+    "vision_cls/compiled": 0.6261792643444377
+  },
+  "note": "Snapshot of this service's own predictions (not measurements); used only to detect unintended drift."
+}

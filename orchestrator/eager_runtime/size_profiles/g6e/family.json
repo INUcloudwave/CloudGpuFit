@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "gpu_family": "g6e",
+  "gpu_name": "NVIDIA L40S",
+  "gpu_base_target": "g6e.xlarge",
+  "description": "GPU kernel-time models (NVIDIA L40S) shared by every g6e size; only host-side overheads differ per size."
+}

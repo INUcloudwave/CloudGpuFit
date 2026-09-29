@@ -1,0 +1,20 @@
+{
+  "model": "microsoft/resnet-18",
+  "type": "vision_cls",
+  "model_config_preset": "resnet18_hf",
+  "dtype": "fp16",
+  "batch_size": 16,
+  "params": {
+    "resolution": 224
+  },
+  "engine_mode": "both",
+  "vram_required_gb": 2.0,
+  "aws_region": "ap-northeast-2",
+  "budget_usd_per_hour": null,
+  "instances": [
+    "g4dn.xlarge",
+    "g6.xlarge",
+    "g6.2xlarge",
+    "g7.2xlarge"
+  ]
+}
