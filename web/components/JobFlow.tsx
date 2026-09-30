@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { InstanceCandidate, JobResponse, PredictPayload, RuntimePrediction, SloInput } from "@/lib/types";
-import { errorMessageFor, BREAKDOWN_LABELS } from "@/lib/jobErrors";
-import { formatBytesToGb } from "@/lib/format";
+import { errorMessageFor } from "@/lib/jobErrors";
+// VRAM 예측 상세 내역을 다시 보여줄 때 함께 주석 해제.
+// import { BREAKDOWN_LABELS } from "@/lib/jobErrors";
+// import { formatBytesToGb } from "@/lib/format";
 import { WORKLOAD_SCHEMAS } from "@/lib/workloadSchema";
 import type { SloVerdict } from "@/lib/slo";
 import { rankCandidates, DEFAULT_WEIGHTS, type ImportanceWeights } from "@/lib/ranking";
@@ -221,7 +223,9 @@ function RuntimeStatusNote({ status, message }: { status: string; message?: stri
     no_candidates:
       "조건(VRAM/리전/예산)을 만족하는 AWS 인스턴스 후보가 없습니다. 인스턴스 가격 데이터가 아직 등록되지 않았을 수 있습니다.",
     no_installed_targets: "후보 인스턴스에 대해 설치된 eager_runtime 프로파일이 없습니다.",
-    skipped: message ?? "이 요청 조합은 현재 Runtime 예측 대상이 아닙니다.",
+    // The backend's skip reason is a developer-facing log line, not an error
+    // the user can act on -- only the generic sentence is shown.
+    skipped: "이 요청 조합은 현재 Runtime 예측 대상이 아닙니다.",
     error: message ?? "Runtime 예측 중 오류가 발생했습니다.",
   };
   const body = text[status];
@@ -391,6 +395,8 @@ export default function JobFlow({ jobId, onReset }: Props) {
         <p className="text-4xl font-bold text-white dark:text-neutral-900">{vram.required_vram_gb} GB</p>
       </div>
 
+      {/* VRAM 예측 상세 내역: 항목별 예측이 아직 정확하지 않아 화면에서는 숨겨 둠.
+          항목별 예측이 정확해지면 이 주석을 풀어 다시 보여줄 것.
       <details className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
         <summary className="cursor-pointer text-sm font-medium text-neutral-700 dark:text-neutral-300">
           VRAM 예측 상세 내역
@@ -406,14 +412,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
           ))}
         </dl>
       </details>
-
-      {vram.warnings.length > 0 && (
-        <div className="space-y-1 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-          {vram.warnings.map((w, i) => (
-            <p key={i}>{w}</p>
-          ))}
-        </div>
-      )}
+      */}
 
       {candidates.length > 0 ? (
         <>
