@@ -59,7 +59,7 @@ export default function SloStep({ jobId, onSubmitted }: Props) {
 
       <div className="space-y-1">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-          max_latency_ms — 허용 최대 Latency
+          max_latency_ms — 최대 허용 Latency
         </label>
         <input
           type="number"
