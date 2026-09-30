@@ -51,7 +51,7 @@ function ConditionsSummary({ payload, slo }: { payload: PredictPayload; slo: Slo
       </p>
       {slo && (
         <p className="mt-1 text-neutral-500">
-          SLO: p90 ≤ {slo.max_latency_ms}ms · Throughput ≥ {slo.min_throughput_rps}req/s
+          SLO: Latency ≤ {slo.max_latency_ms}ms · Throughput ≥ {slo.min_throughput_rps}req/s
         </p>
       )}
     </div>
@@ -169,7 +169,7 @@ function RankingView({
               <tr>
                 <th className="px-5 py-3">순위</th>
                 <th className="px-5 py-3">인스턴스</th>
-                <th className="px-5 py-3">p90 예상 Latency</th>
+                <th className="px-5 py-3">예상 Latency</th>
                 <th className="px-5 py-3">예상 Throughput</th>
                 <th className="px-5 py-3">SLO 상태</th>
                 <th className="px-5 py-3">예상 비용</th>
