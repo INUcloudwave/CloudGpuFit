@@ -35,6 +35,7 @@ cd orchestrator
 python -m venv .venv
 .venv/Scripts/activate      # Windows. macOS/Linux는 source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-runtime.txt   # eager_runtime 의존성 (torch 등, 용량 큼)
 uvicorn main:app --port 8000
 ```
 
