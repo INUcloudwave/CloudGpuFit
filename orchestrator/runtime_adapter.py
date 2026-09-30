@@ -4,9 +4,10 @@ Validates a CloudGPUFit `PredictPayload`-shaped dict, then asks
 eager_runtime for Eager or Compiled latency on the candidate instances.
 
 Rules:
-  * Only instances with their own installed target are predicted. There is
-    no proxy and no vCPU scaling -- a candidate without a target is reported
-    in `not_installed_targets`, never answered with another instance's numbers.
+  * An instance with its own installed target is predicted directly. A size
+    without one borrows its same-family target's prediction scaled by vCPU
+    count (instance_filter FIXME(latency-proxy)); anything with neither is
+    reported in `not_installed_targets`.
   * `engine_mode` ("eager" default, or "compiled") is passed to eager_runtime
     as its own argument, never smuggled inside the request dict.
   * audio_encoder (Wav2Vec2/HuBERT-style encoder-only) is supported.
@@ -18,9 +19,11 @@ Rules:
 """
 from __future__ import annotations
 
+import copy
 from typing import Any, Iterable, Mapping
 
 from eager_runtime import available_targets, predict_runtime_targets
+from instance_filter import supported_instances
 
 SUPPORTED_WORKLOAD_TYPES = {"decoder_llm", "vision_cls", "text_encdec", "audio_encoder"}
 SUPPORTED_ENGINE_MODES = {"eager", "compiled"}
@@ -124,8 +127,16 @@ def predict_candidate_runtimes(
         }
 
     installed = set(available_targets(engine_mode=engine_mode))
-    runnable = [t for t in candidate_list if t in installed]
-    not_installed = [t for t in candidate_list if t not in installed]
+    specs = supported_instances(engine_mode)
+    # candidate -> the target whose prediction answers it (itself, or the
+    # same-family target it borrows).
+    profile_for: dict[str, str] = {}
+    for t in candidate_list:
+        profile = t if t in installed else (specs.get(t) or {}).get("latency_proxy_of")
+        if profile in installed:
+            profile_for[t] = profile
+    runnable = list(profile_for)
+    not_installed = [t for t in candidate_list if t not in profile_for]
     if not runnable:
         code = "no_installed_targets" if candidate_list else "no_candidates"
         return {
@@ -144,10 +155,28 @@ def predict_candidate_runtimes(
             "predictions": [],
         }
 
+    unique_profiles = list(dict.fromkeys(profile_for.values()))
     result = predict_runtime_targets(
-        _runtime_request(payload), targets=runnable, engine_mode=engine_mode
+        _runtime_request(payload), targets=unique_profiles, engine_mode=engine_mode
     )
-    predictions = result.get("predictions", [])
+    by_profile = {p.get("target_instance"): p for p in result.get("predictions", [])}
+    predictions = []
+    for target, profile in profile_for.items():
+        base = by_profile.get(profile)
+        if base is None:
+            continue
+        prediction = copy.deepcopy(base)
+        if profile != target:
+            prediction.update(instance_type=target, target_instance=target, latency_proxy_of=profile)
+            if prediction.get("status") == "ok":
+                scale = specs[target]["latency_scale"]
+                for key in ("predicted_median_ms", "raw_predicted_median_ms", "predicted_p90_ms"):
+                    if prediction.get(key) is not None:
+                        prediction[key] *= scale
+                # throughput = batch_size / median, so it scales inversely.
+                if prediction.get("predicted_throughput_rps") is not None:
+                    prediction["predicted_throughput_rps"] /= scale
+        predictions.append(prediction)
     succeeded = sum(p.get("status") == "ok" for p in predictions)
     failed = len(predictions) - succeeded
     status = "ok" if succeeded == len(predictions) else ("partial" if succeeded else "error")

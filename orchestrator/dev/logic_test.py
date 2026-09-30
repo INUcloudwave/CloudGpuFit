@@ -80,16 +80,20 @@ specs = instance_filter.supported_instances("eager", tmp)
 cands = instance_filter.filter_instances(2.0, "r", None, catalog, supported=specs)
 names = [c["instance_type"] for c in cands]
 check("g7.2xlarge" in names, "g7.2xlarge is a candidate")
-check(sorted(names) == sorted(INSTALLED["eager"]), "only installed targets are candidates")
+check(set(INSTALLED["eager"]) <= set(names), "every installed target is a candidate")
 check(len(instance_filter.SUPPORTED_GPU_INSTANCES) == 26 and "g5g.xlarge" not in instance_filter.SUPPORTED_GPU_INSTANCES
       and "g6.2xlarge" in instance_filter.SUPPORTED_GPU_INSTANCES,
       "instance list = original minus g5g, plus g7.2xlarge (26)")
-check(not {"g5g.xlarge", "g6.2xlarge", "g6.16xlarge"} & set(names), "g5g / unmeasured sizes excluded")
+check("g5g.xlarge" not in names, "g5g excluded")
+check({"g6.2xlarge", "g6.16xlarge"} <= set(names), "unmeasured same-family sizes offered via proxy")
+check(specs["g6.2xlarge"]["latency_proxy_of"] == "g6.xlarge" and specs["gr6.8xlarge"]["latency_proxy_of"] == "gr6.4xlarge"
+      and specs["g7e.4xlarge"]["latency_proxy_of"] == "g7e.2xlarge", "proxy borrows the same-family target")
+check(abs(specs["g7e.4xlarge"]["latency_scale"] - 0.97) < 1e-9, "vCPU scale is relative to the borrowed target")
 check(next(c for c in cands if c["instance_type"] == "g7.2xlarge")["gpu_vram_gb"] == 32, "g7.2xlarge = 32 GB GPU")
 check(next(c for c in cands if c["instance_type"] == "gr6.4xlarge")["gpu_name"] == "NVIDIA L4", "gr6 resolved via size_profile family g6")
 
 big = [c["instance_type"] for c in instance_filter.filter_instances(40.0, "r", None, catalog, supported=specs)]
-check(sorted(big) == ["g6e.xlarge", "g7e.2xlarge"], "VRAM filter")
+check({c.split(".")[0] for c in big} == {"g6e", "g7e"}, "VRAM filter")
 
 # wrong GPU in a manifest must not be shown with the family's specs
 (tmp / "targets" / "g5.xlarge" / "runtime_manifest.json").write_text(json.dumps({"target_instance": "g5.xlarge", "gpu_name": "NVIDIA L4"}))
@@ -100,10 +104,15 @@ payload = {"model": "m", "type": "audio_encoder", "dtype": "fp16", "batch_size":
            "params": {"mode": "prefill", "audio_samples": 16000}, "model_config_snapshot": {"model_type": "wav2vec2"}}
 r = runtime_adapter.predict_candidate_runtimes(payload, ["g7.2xlarge", "g5g.xlarge"], "compiled")
 check(r["status"] == "ok" and r["succeeded"] == 1, "audio_encoder accepted")
-check(r["not_installed_targets"] == ["g5g.xlarge"], "target without artifacts reported, not proxied")
+check(r["not_installed_targets"] == ["g5g.xlarge"], "instance with no same-family target reported")
 check(calls[-1]["targets"] == ["g7.2xlarge"] and calls[-1]["engine_mode"] == "compiled", "only direct targets predicted, engine_mode passed")
 check("engine_mode" not in calls[-1]["request"], "engine_mode not smuggled in the request dict")
-check(r["predictions"][0]["predicted_median_ms"] == 5.0, "no vCPU scaling applied")
+check(r["predictions"][0]["predicted_median_ms"] == 5.0, "own target not scaled")
+r = runtime_adapter.predict_candidate_runtimes(payload, ["g6.xlarge", "g6.8xlarge"], "eager")
+proxied = next(p for p in r["predictions"] if p["target_instance"] == "g6.8xlarge")
+check(calls[-1]["targets"] == ["g6.xlarge"], "borrowed target predicted once")
+check(proxied["latency_proxy_of"] == "g6.xlarge" and abs(proxied["predicted_median_ms"] - 5.0 * 0.91) < 1e-9,
+      "proxy scaled by vCPU")
 check(runtime_adapter.predict_candidate_runtimes({**payload, "type": "audio_encdec"}, ["g6.xlarge"])["status"] == "skipped", "audio_encdec refused")
 check(runtime_adapter.predict_candidate_runtimes(payload, ["g6.xlarge"], "bogus")["error_code"] == "unsupported_engine_mode", "bad engine_mode refused")
 
@@ -117,8 +126,8 @@ try:
     check(False, "audio_encoder generate refused")
 except ValueError:
     check(True, "audio_encoder generate refused")
-check(set(instance_filter.recommendable_instance_types(tmp)) == set(INSTALLED["eager"]) | set(INSTALLED["compiled"]),
-      "price fetch set = recommendable instances")
+check(set(instance_filter.recommendable_instance_types(tmp)) == set(instance_filter.SUPPORTED_GPU_INSTANCES),
+      "every listed instance is recommendable (own target or proxy)")
 
 k1 = cache_key.pipeline_cache_key_for({}, {**payload, "engine_mode": "eager"}, eager_runtime_root=tmp, catalog_version="v")
 k2 = cache_key.pipeline_cache_key_for({}, {**payload, "engine_mode": "compiled"}, eager_runtime_root=tmp, catalog_version="v")

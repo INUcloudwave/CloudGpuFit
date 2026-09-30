@@ -1,12 +1,11 @@
 """AWS GPU instance candidate filter.
 
 Turns a VRAM requirement into the AWS single-GPU instances that can be
-recommended. An instance is a candidate ONLY if eager_runtime has a target
-for it -- targets/<instance>/ with its own validated manifest, either a full
-calibrated target or a size target built by build_size_target.py. There is no
-proxy: an instance that was never measured (g6.2xlarge, ... ) is not
-offered, and no latency is ever scaled by vCPU count. A new size becomes a
-candidate the moment its target directory exists, with no code change here.
+recommended. An instance with its own eager_runtime target (targets/<instance>/,
+full or built by build_size_target.py) is predicted directly. Every other
+listed size borrows a same-family target's prediction, scaled by vCPU count
+(latency_scale_for_vcpu, FIXME(latency-proxy)) -- a placeholder until that
+size gets its own target, at which point it switches over with no code change.
 
 GPU/host specs come from SUPPORTED_GPU_INSTANCES; the target's manifest must
 have been calibrated on the family's GPU (GPU_FAMILIES).
@@ -16,16 +15,14 @@ AWS prices and region availability are not hardcoded: the caller passes
 row means "availability unknown" and the instance is dropped; a row with
 price None means "available, price unknown" and the budget check is skipped.
 
-History: unmeasured sizes (2xlarge-16xlarge, g5g, ...) used to borrow a
-calibrated .xlarge result scaled by a guessed vCPU curve
-(latency_scale_for_vcpu). That proxy is removed: they stay in
-SUPPORTED_GPU_INSTANCES but are recommended only once they have their own
-target (measured, or built from a size profile with build_size_target.py --
-GPU kernel models shared, only the measured host overheads differ).
+History: the vCPU proxy was removed when eager_runtime was integrated and
+restored for the demo, now based on the borrowed target's own vCPU count
+instead of a fixed 4.
 """
 from __future__ import annotations
 
 import json
+from math import log2
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -41,12 +38,9 @@ ENGINE_MODES = ("eager", "compiled")
 # https://aws.amazon.com/ec2/instance-types/g7/. aws_pricing.py fetches prices
 # for exactly these keys.
 #
-# Being listed here does NOT make an instance recommendable. It is recommended
-# only when eager_runtime has its own target for it (targets/<instance>/ with a
-# validated manifest). Today that is g4dn.xlarge, g5.xlarge, g6.xlarge,
-# g6e.xlarge, g7.2xlarge, g7e.2xlarge and gr6.4xlarge. The others stay listed
-# and start being recommended automatically once their measured target is
-# added -- there is no proxy and no vCPU scaling in between.
+# Instances with their own target today: g4dn.xlarge, g5.xlarge, g6.xlarge,
+# g6e.xlarge, g7.2xlarge, g7e.2xlarge and gr6.4xlarge. The rest borrow a
+# same-family one (see supported_instances()).
 SUPPORTED_GPU_INSTANCES: dict[str, dict[str, Any]] = {
     "g4dn.xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 4},
     "g4dn.2xlarge": {"gpu_name": "NVIDIA T4", "gpu_count": 1, "gpu_vram_gb": 16, "vcpu": 8},
@@ -113,16 +107,66 @@ def instance_spec(instance_type: str, runtime_root: Path = RUNTIME_ROOT) -> dict
     return {**listed, "gpu_family": family, "calibrated_gpu": manifest.get("gpu_name")}
 
 
+# FIXME(latency-proxy): a hand-picked curve, not measured -- "more vCPUs
+# shave a little host-side overhead (kernel launch, input prep)". 3% faster
+# per vCPU doubling over the borrowed target, capped at 15%. Replace with a
+# real per-size target (build_size_target.py) once one is measured; an
+# instance with its own target never goes through this.
+_LATENCY_SCALE_PER_VCPU_DOUBLING = 0.03
+_LATENCY_SCALE_FLOOR = 0.85
+
+
+def latency_scale_for_vcpu(vcpu: int, base_vcpu: int) -> float:
+    """Latency multiplier (<= 1.0) for an instance borrowing a `base_vcpu`
+    target's prediction. No scaling at or below the base's vCPU count."""
+    if vcpu <= base_vcpu:
+        return 1.0
+    return max(_LATENCY_SCALE_FLOOR, 1.0 - _LATENCY_SCALE_PER_VCPU_DOUBLING * log2(vcpu / base_vcpu))
+
+
+def _family(instance_type: str) -> str:
+    return instance_type.split(".", 1)[0]
+
+
+def _proxy_base(instance_type: str, own: Mapping[str, Mapping[str, Any]]) -> str | None:
+    """Same-family instance with its own target to borrow from: the largest
+    one not bigger than `instance_type`, else the smallest one."""
+    vcpu = SUPPORTED_GPU_INSTANCES[instance_type]["vcpu"]
+    same_family = sorted(
+        (spec["vcpu"], name) for name, spec in own.items() if _family(name) == _family(instance_type)
+    )
+    if not same_family:
+        return None
+    not_bigger = [name for base_vcpu, name in same_family if base_vcpu <= vcpu]
+    return not_bigger[-1] if not_bigger else same_family[0][1]
+
+
 def supported_instances(
     engine_mode: str = "eager",
     runtime_root: Path = RUNTIME_ROOT,
 ) -> dict[str, dict[str, Any]]:
-    """Every instance that can be recommended for this engine mode."""
-    specs = {}
+    """Every instance that can be recommended for this engine mode: those
+    with their own target, plus listed sizes of the same family that borrow
+    one of them (`latency_proxy_of`, see FIXME(latency-proxy) above)."""
+    own: dict[str, dict[str, Any]] = {}
     for instance_type in available_targets(engine_mode=engine_mode):
         spec = instance_spec(instance_type, runtime_root)
         if spec is not None:
-            specs[instance_type] = spec
+            own[instance_type] = spec
+    specs = dict(own)
+    for instance_type, listed in SUPPORTED_GPU_INSTANCES.items():
+        if instance_type in own:
+            continue
+        base = _proxy_base(instance_type, own)
+        if base is None:
+            continue
+        specs[instance_type] = {
+            **listed,
+            "gpu_family": _family(instance_type),
+            "calibrated_gpu": own[base]["calibrated_gpu"],
+            "latency_proxy_of": base,
+            "latency_scale": latency_scale_for_vcpu(listed["vcpu"], own[base]["vcpu"]),
+        }
     return specs
 
 
@@ -200,7 +244,9 @@ def filter_instances(
                 "vcpu": spec["vcpu"],
                 "price_usd_per_hour": price,
                 "aws_region": aws_region,
-                "profile_provenance": target_provenance(instance_type)["status"],
+                "profile_provenance": (
+                    "proxy" if spec.get("latency_proxy_of") else target_provenance(instance_type)["status"]
+                ),
             }
         )
     candidates.sort(key=lambda item: (item["gpu_vram_gb"], item["instance_type"]))
