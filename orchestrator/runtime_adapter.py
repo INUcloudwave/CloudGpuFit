@@ -12,6 +12,9 @@ Rules:
   * audio_encoder (Wav2Vec2/HuBERT-style encoder-only) is supported.
     audio_encdec (Whisper-style encoder-decoder) is still refused: it is a
     different workload that eager_runtime has not been calibrated for.
+  * mode=generate (decoder_llm / text_encdec) is accepted, but latency is
+    predicted for the prefill pass only (up to the first token's logits) --
+    eager_runtime has no decode-loop model. mode only changes VRAM (KV cache).
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ from eager_runtime import available_targets, predict_runtime_targets
 
 SUPPORTED_WORKLOAD_TYPES = {"decoder_llm", "vision_cls", "text_encdec", "audio_encoder"}
 SUPPORTED_ENGINE_MODES = {"eager", "compiled"}
+GENERATE_WORKLOAD_TYPES = {"decoder_llm", "text_encdec"}
 _EXPLICITLY_UNSUPPORTED_TYPES = {
     "audio_encdec": (
         "audio_encdec (Whisper-style encoder-decoder) is not calibrated. Only "
@@ -52,14 +56,13 @@ def validate_payload(payload: Mapping[str, Any]) -> None:
             "unsupported_dtype",
             f"Runtime prediction only runs fp16 requests, got dtype={dtype!r}.",
         )
-    params = payload.get("params") or {}
-    mode = str(params.get("mode") or "prefill").lower()
-    if mode != "prefill":
+    workload_type = payload.get("type")
+    if _mode(payload) == "generate" and workload_type not in GENERATE_WORKLOAD_TYPES:
         raise UnsupportedRuntimeRequest(
             "unsupported_mode",
-            f"Runtime prediction only runs mode=prefill, got mode={mode!r}.",
+            f"mode=generate is only supported for {sorted(GENERATE_WORKLOAD_TYPES)}, "
+            f"got type={workload_type!r}.",
         )
-    workload_type = payload.get("type")
     if workload_type in _EXPLICITLY_UNSUPPORTED_TYPES:
         raise UnsupportedRuntimeRequest(
             "unsupported_workload_type", _EXPLICITLY_UNSUPPORTED_TYPES[workload_type]
@@ -71,16 +74,28 @@ def validate_payload(payload: Mapping[str, Any]) -> None:
         )
 
 
+def _mode(payload: Mapping[str, Any]) -> str:
+    params = payload.get("params") or {}
+    return str(params.get("mode") or "prefill").lower()
+
+
 def _runtime_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     # engine_mode is deliberately not part of the request: it is passed to
     # predict_runtime_targets() as its own argument, so there is exactly one
     # place that decides the mode.
+    # mode/max_new_tokens are stripped: eager_runtime only ever predicts the
+    # prefill forward pass, and refuses mode=generate outright.
+    params = {
+        key: value
+        for key, value in (payload.get("params") or {}).items()
+        if key not in {"mode", "max_new_tokens"}
+    }
     return {
         "model": payload["model"],
         "type": payload.get("type"),
         "dtype": payload["dtype"],
         "batch_size": payload["batch_size"],
-        "params": payload.get("params") or {},
+        "params": params,
         "model_config": payload.get("model_config_snapshot") or payload.get("model_config"),
     }
 

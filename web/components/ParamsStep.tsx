@@ -4,7 +4,6 @@ import type { BudgetPeriod, Dtype, ModelConfigFields, WorkloadType } from "@/lib
 import DeploymentFields from "./DeploymentFields";
 import {
   DTYPE_FIELD,
-  GENERATE_MODE_WARNING,
   WORKLOAD_SCHEMAS,
   defaultResolution,
   isResolutionLocked,
@@ -203,12 +202,6 @@ export default function ParamsStep({
       </div>
 
       <div className="space-y-4">{schema.fields.map(renderField)}</div>
-
-      {values.mode === "generate" && (
-        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-          {GENERATE_MODE_WARNING}
-        </p>
-      )}
 
       <div className="flex justify-end">
         <button type="button" onClick={onShowScenarios} className="text-sm text-neutral-500 underline underline-offset-2">

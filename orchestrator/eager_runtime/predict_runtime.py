@@ -36,6 +36,13 @@ _MODULE_ROOT = Path(__file__).resolve().parent
 if str(_MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODULE_ROOT))
 
+# The predictors print progress lines with emoji/Korean. On a Windows console
+# stdout defaults to the ANSI codepage (cp949 on Korean Windows), where those
+# prints raise UnicodeEncodeError and every prediction comes back as an error.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 import predict_compiled_runtime
 import predict_eager_runtime
 from compiled_external_model import external_model_root

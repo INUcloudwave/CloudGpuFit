@@ -203,8 +203,15 @@ async def process_job(job_id: str) -> None:
         engine_mode,
     )
 
+    # generate is the only mode the UI sends now, so predict_vram.py's
+    # "mode=generate is EXPERIMENTAL" note would show on every LLM job.
+    vram_result = dict(vram_outcome.result)
+    vram_result["warnings"] = [
+        w for w in vram_result.get("warnings", []) if not w.startswith("mode=generate is EXPERIMENTAL")
+    ]
+
     result = {
-        "vram": vram_outcome.result,
+        "vram": vram_result,
         "candidates": candidates,
         "catalog_error": catalog_error,
         "engine_mode": engine_mode,

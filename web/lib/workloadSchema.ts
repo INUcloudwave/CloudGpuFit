@@ -35,8 +35,6 @@ export interface WorkloadSchema {
   fields: FieldSpec[];
 }
 
-const isGenerate = (values: Record<string, unknown>) => values.mode === "generate";
-
 export const DTYPE_FIELD: RadioFieldSpec = {
   key: "dtype",
   label: "dtype",
@@ -49,26 +47,15 @@ export const DTYPE_FIELD: RadioFieldSpec = {
   ],
 };
 
-const MODE_FIELD = (defaultMaxNewTokens: number): FieldSpec[] => [
-  {
-    key: "mode",
-    label: "mode",
-    kind: "radio",
-    default: "prefill",
-    options: [
-      { value: "prefill", label: "prefill" },
-      { value: "generate", label: "generate" },
-    ],
-  },
-  {
-    key: "max_new_tokens",
-    label: "max_new_tokens",
-    kind: "number",
-    default: defaultMaxNewTokens,
-    hardMin: 1,
-    showWhen: isGenerate,
-  },
-];
+// Generative workloads are always predicted end to end (prefill + every
+// generated token) -- there is no prefill-only mode to pick in the form.
+const MAX_NEW_TOKENS_FIELD = (defaultMaxNewTokens: number): FieldSpec => ({
+  key: "max_new_tokens",
+  label: "max_new_tokens",
+  kind: "number",
+  default: defaultMaxNewTokens,
+  hardMin: 1,
+});
 
 export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, WorkloadSchema> = {
   decoder_llm: {
@@ -77,7 +64,7 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
     fields: [
       { key: "batch_size", label: "batch_size", kind: "number", default: 1, hardMin: 1 },
       { key: "seq_len", label: "seq_len", kind: "number", default: 512, hardMin: 1 },
-      ...MODE_FIELD(256),
+      MAX_NEW_TOKENS_FIELD(256),
     ],
   },
   vision_cls: {
@@ -95,7 +82,7 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
       { key: "batch_size", label: "batch_size", kind: "number", default: 1, hardMin: 1 },
       { key: "encoder_seq_len", label: "encoder_seq_len", kind: "number", default: 512, hardMin: 1 },
       { key: "decoder_seq_len", label: "decoder_seq_len", kind: "number", default: 128, hardMin: 1 },
-      ...MODE_FIELD(128),
+      MAX_NEW_TOKENS_FIELD(128),
     ],
   },
   audio_encdec: {
@@ -112,7 +99,7 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
         helperText: "30초 단위 (예: 3 = 90초 오디오)",
       },
       { key: "decoder_seq_len", label: "decoder_seq_len", kind: "number", default: 128, hardMin: 1 },
-      ...MODE_FIELD(224),
+      MAX_NEW_TOKENS_FIELD(224),
     ],
   },
 };
@@ -166,19 +153,19 @@ export const SCENARIO_PRESETS: Record<Exclude<WorkloadType, "unsupported">, Scen
       id: "short_chat",
       label: "짧은 대화 응답",
       dtype: "fp16",
-      values: { batch_size: 1, seq_len: 128, mode: "generate", max_new_tokens: 64 },
+      values: { batch_size: 1, seq_len: 128, max_new_tokens: 64 },
     },
     {
       id: "doc_summary",
       label: "문서 요약 요청",
       dtype: "fp16",
-      values: { batch_size: 4, seq_len: 512, mode: "generate", max_new_tokens: 256 },
+      values: { batch_size: 4, seq_len: 512, max_new_tokens: 256 },
     },
     {
       id: "batch_processing",
       label: "대량 배치 처리",
       dtype: "fp16",
-      values: { batch_size: 8, seq_len: 1024, mode: "generate", max_new_tokens: 256 },
+      values: { batch_size: 8, seq_len: 1024, max_new_tokens: 256 },
     },
   ],
   vision_cls: [
@@ -191,19 +178,19 @@ export const SCENARIO_PRESETS: Record<Exclude<WorkloadType, "unsupported">, Scen
       id: "short_translation",
       label: "짧은 번역",
       dtype: "fp16",
-      values: { batch_size: 1, encoder_seq_len: 64, decoder_seq_len: 64, mode: "prefill", max_new_tokens: null },
+      values: { batch_size: 1, encoder_seq_len: 64, decoder_seq_len: 64, max_new_tokens: 64 },
     },
     {
       id: "medium_summary",
       label: "중간 길이 문서 요약",
       dtype: "fp16",
-      values: { batch_size: 1, encoder_seq_len: 512, decoder_seq_len: 128, mode: "generate", max_new_tokens: 128 },
+      values: { batch_size: 1, encoder_seq_len: 512, decoder_seq_len: 128, max_new_tokens: 128 },
     },
     {
       id: "long_transform",
       label: "긴 문서 변환",
       dtype: "fp16",
-      values: { batch_size: 1, encoder_seq_len: 1024, decoder_seq_len: 256, mode: "generate", max_new_tokens: 256 },
+      values: { batch_size: 1, encoder_seq_len: 1024, decoder_seq_len: 256, max_new_tokens: 256 },
     },
   ],
   audio_encdec: [],
@@ -224,10 +211,10 @@ export function describeScenario(type: Exclude<WorkloadType, "unsupported">, pre
   const parts = [`batch=${v.batch_size}`];
   if (type === "decoder_llm") {
     parts.push(`입력 ${v.seq_len} 토큰`);
-    if (v.mode === "generate") parts.push(`생성 ${v.max_new_tokens} 토큰`);
+    parts.push(`생성 ${v.max_new_tokens} 토큰`);
   } else if (type === "text_encdec") {
     parts.push(`인코더 ${v.encoder_seq_len}`, `디코더 ${v.decoder_seq_len}`);
-    if (v.mode === "generate") parts.push(`생성 ${v.max_new_tokens} 토큰`);
+    parts.push(`생성 ${v.max_new_tokens} 토큰`);
   }
   parts.push(preset.dtype);
   return parts.join(" · ");
@@ -265,22 +252,6 @@ export function collectFieldErrors(
   return errors;
 }
 
-export const GENERATE_MODE_WARNING =
-  "generate 모드의 KV cache 추정은 아직 GPU 실측 대비 검증되지 않았습니다. 과대추정 경향이 있습니다.";
-
-export function collectWarnings(
-  type: Exclude<WorkloadType, "unsupported">,
-  values: Record<string, unknown>
-): string[] {
-  const warnings: string[] = [];
-
-  if (values.mode === "generate") {
-    warnings.push(GENERATE_MODE_WARNING);
-  }
-
-  return warnings;
-}
-
 /** Monthly-to-hourly conversion basis: 24h × 30 days. */
 export const BUDGET_HOURS_PER_MONTH = 720;
 
@@ -310,6 +281,7 @@ export function buildPayload(
     }
     params[field.key] = field.kind === "number" ? Number(values[field.key]) : (values[field.key] as string);
   }
+  if ("max_new_tokens" in params) params.mode = "generate";
 
   return {
     model: modelId,
@@ -319,6 +291,6 @@ export function buildPayload(
     batch_size: Number(values.batch_size),
     params,
     deployment: normalizeDeployment(deployment),
-    warnings: collectWarnings(type, values),
+    warnings: [],
   };
 }
