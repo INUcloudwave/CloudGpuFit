@@ -14,6 +14,7 @@ lists (never shell=True) that work the same from Python on any OS.
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 IMAGE = "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
@@ -133,6 +134,10 @@ def ensure_ready() -> dict:
     if not _xmem_ready_on_host() or not _pip_ready_in_container():
         _finish_xmem_setup()
         status = "provisioned"
+    else:
+        # A ready container may still use a predictor copied before git pull.
+        # Refresh only that file; keep the container, caches and dependencies.
+        _sync_predictor()
 
     return {"status": status}
 
@@ -162,6 +167,25 @@ def _create_container() -> None:
         raise SetupError(f"컨테이너 생성 실패: {proc.stderr.strip()}")
 
 
+def _sync_predictor() -> None:
+    """Atomically refresh the predictor in the bind-mounted xMem checkout."""
+    source = CLOUDGPUFIT_DIR / "predict_vram.py"
+    target = _xmem_dir() / "predict_vram.py"
+    if not source.is_file():
+        raise SetupError(f"예측 코드를 찾을 수 없습니다: {source}")
+    content = source.read_bytes()
+    if target.is_file() and target.read_bytes() == content:
+        return
+    # Place the temporary file beside the target so replace stays atomic.
+    fd, temporary = tempfile.mkstemp(prefix=".predict-vram-", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+        os.replace(temporary, target)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def _finish_xmem_setup() -> None:
     if not CLOUDGPUFIT_DIR.exists():
         raise SetupError(f"CloudGPUFit 저장소를 찾을 수 없습니다: {CLOUDGPUFIT_DIR}")
@@ -182,7 +206,7 @@ def _finish_xmem_setup() -> None:
 
     _apply_patch_if_needed(xmem_dir)
 
-    shutil.copyfile(CLOUDGPUFIT_DIR / "predict_vram.py", xmem_dir / "predict_vram.py")
+    _sync_predictor()
 
     pip_cmd = "pip install --no-cache-dir " + " ".join(PIP_PACKAGES)
     proc = _run(["docker", "exec", "-t", CONTAINER_NAME, "bash", "-c", pip_cmd], timeout=PIP_INSTALL_TIMEOUT_SECONDS)

@@ -1,7 +1,9 @@
 # xMem 기반 GPU VRAM 사전 예측 도구
 
-CPU만으로 추론 워크로드의 GPU VRAM 필요량을 예측합니다. 실제 GPU 없이도
-`required_vram_gb` 값을 얻어 AWS GPU 인스턴스 후보를 1차 필터링하는 데 씁니다.
+CPU만으로 추론 워크로드의 텐서 메모리와 해석적으로 계산한 KV cache를 추정합니다.
+`required_vram_gb`는 이 추정량을 GiB로 표현한 기존 API 필드이며, 고정 2GiB 마진을
+더하지 않습니다. allocator 캐시, CUDA context 등 추가 사용량은 포함하지 않으므로
+이 값만으로 실제 GPU 총사용량이나 모델 적재 가능성을 보장할 수는 없습니다.
 
 > **`localPrototype` 브랜치 안내**: 이 브랜치에는 이 도구를 실제로 감싸는
 > 로컬 프로토타입(웹 UI + 오케스트레이터)이 추가되어 있습니다. 아직 `main`에는
@@ -73,18 +75,27 @@ LLM은 Hugging Face 모델 ID를 그대로 쓰면 됩니다 (예: `facebook/opt-
 ```json
 {
   "status": "ok",
-  "required_vram_gb": 2.86,
-  "warnings": []
+  "required_vram_gb": 0.29,
+  "breakdown_bytes": {
+    "fixed_margin": 0
+  },
+  "warnings": [
+    "VRAM estimate excludes unused allocator cache, CUDA context, and other non-tensor GPU memory; no fixed safety margin is added"
+  ]
 }
 ```
 
-`required_vram_gb`를 인스턴스 선정 기준값으로 사용하세요.
-`warnings`에는 결과 해석에 영향을 주는 사항이 담깁니다.
+위 값은 GPT-2 / FP16 / batch 1 / 입력 256 / 출력 64 조건에서 받은 프로파일 값을
+대입한 예시입니다. `required_vram_bytes`는 보정된 텐서 추정량 + KV 추정량이며,
+`breakdown_bytes.fixed_margin`은 기존 결과 처리 코드와의 호환을 위해 0으로 유지합니다.
+인스턴스 후보 필터는 이 추정값을 사용하지만, 실제 GPU 총사용량과는 범위가 다릅니다.
+`warnings`에는 이 차이와 결과 해석에 영향을 주는 사항이 담깁니다.
 
 ## 3. 알려진 제약
 
 - CPU 프로파일링은 항상 FP32로 수행 후 dtype 계수(0.5)로 환산합니다.
-- 결과에는 allocator gap + CUDA context를 흡수하는 고정 마진 2GB가 포함됩니다.
+- 고정 2GiB 마진은 더하지 않습니다. allocator 캐시·CUDA context·기타 외부 메모리는 별도로 검증해야 합니다.
+- 기존 텐서 과소추정 보정 상수(32MiB에 dtype 계수 적용)는 유지합니다. 이번 변경은 고정 2GiB 마진만 제거한 것입니다.
 - 7B급 이상 대형 모델은 CPU 프로파일링 중 메모리 부족(OOM)으로 실패할 수 있습니다.
 - `generate` 모드는 KV cache를 추적하지 않고 수식으로 추정하며, 과대추정 경향이 있습니다.
 - 인코더-디코더(T5/BART 등)는 `--encoder_seq_len`/`--decoder_seq_len`으로 지원합니다. 오디오(Whisper 등) 모델은 아직 지원하지 않습니다.

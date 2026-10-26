@@ -2,7 +2,7 @@
 """
 predict_vram.py — CPU-only GPU VRAM 예측 래퍼
 
-xMem 저장소 루트에 두고 실행한다. xMem 코어 코드는 수정하지 않으며,
+프로젝트의 core_inference.patch가 적용된 xMem 저장소 루트에서 실행한다.
 합성 데이터로더를 주입해 사용자가 지정한 shape 그대로 프로파일링한다.
 
   python predict_vram.py --model facebook/opt-125m --batch_size 8 --seq_len 512
@@ -30,9 +30,6 @@ DTYPE_BYTES = {"fp32": 4, "fp16": 2, "bf16": 2}
 
 # tensor 예측 과소추정 보정. LLM 12조건 관측 최대 -2.37%.
 UNDERESTIMATE_CONSTANT = 32 * 1024 ** 2
-
-# reserved-allocated gap + CUDA context + 여유를 흡수하는 고정 마진.
-MARGIN_BYTES = 2 * 1024 ** 3
 
 PROFILE_ITERATIONS = 2      # xMem train_on_cpu 기본값과 동일
 SAMPLES_PER_LOADER = 4      # iterations=2 → 최소 3배치 필요
@@ -254,7 +251,8 @@ def kv_cache_bytes(cfg, batch_size, total_len, dtype):
 
 # ───────────────────────────────────────── 경고
 def collect_warnings(kind, mode):
-    w = []
+    w = ["VRAM estimate excludes unused allocator cache, CUDA context, "
+         "and other non-tensor GPU memory; no fixed safety margin is added"]
     if mode == "generate":
         w.append("mode=generate is EXPERIMENTAL: the KV cache is estimated "
                  "analytically rather than traced, and tends to overestimate")
@@ -352,7 +350,7 @@ def run(args):
             warns.append("KV cache could not be computed from the model config; "
                          "the result covers prefill only")
 
-    required = corrected + (kv or 0) + MARGIN_BYTES
+    required = corrected + (kv or 0)
 
     return {
         "status": "ok",
@@ -371,7 +369,8 @@ def run(args):
             "predicted_allocated_scaled": int(scaled),
             "after_underestimate_correction": int(corrected),
             "kv_cache_estimate": kv,
-            "fixed_margin": MARGIN_BYTES,
+            # Preserve the existing breakdown schema; no margin is added.
+            "fixed_margin": 0,
         },
         "required_vram_bytes": int(required),
         "required_vram_gb": round(required / 1024 ** 3, 2),

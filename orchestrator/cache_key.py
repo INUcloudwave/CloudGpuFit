@@ -23,7 +23,8 @@ from typing import Any
 
 # Bump by hand whenever predict_vram.py's output shape/semantics change in a
 # way that should invalidate previously cached jobs.
-VRAM_PREDICTOR_VERSION = "1"
+# "2": remove the fixed 2 GiB margin; invalidate old result semantics.
+VRAM_PREDICTOR_VERSION = "2"
 
 # Bump by hand whenever runtime_adapter.py / instance_filter.py's own logic
 # changes in a way that should invalidate previously cached jobs. This is
