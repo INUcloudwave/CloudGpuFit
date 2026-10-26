@@ -85,7 +85,7 @@ def main():
         source = repo / "predict_vram.py"
         if "MARGIN_BYTES" in source.read_text(encoding="utf-8"):
             raise RuntimeError("Predictor still contains the old fixed margin")
-        state["git_commit"] = command(["git","-C",str(repo),"rev-parse","HEAD"],
+        state["git_commit"] = command(["git","-c","safe.directory="+str(repo),"-C",str(repo),"rev-parse","HEAD"],
                                       capture_output=True, check=True).stdout.strip()
         state["predictor_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
         write(run / "manifest.json", state)
