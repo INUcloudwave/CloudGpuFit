@@ -519,6 +519,61 @@ class PointwiseContextSimulatorRouter(linear_v6.LinearContextSimulatorRouter):
         predicted_ms = theoretical_ms * max(np.expm1(ratio_log), 0)
         return predicted_ms, theoretical_ms
 
+    def _prepare_node(self, node, batch_size, force_memory_zero=False):
+        """Batch-API twin of _predict_node (same features, no predict)."""
+        if not node.get("Use_Pointwise_Context", 0):
+            return super()._prepare_node(node, batch_size, force_memory_zero)
+
+        operation = node["pointwise_operation"]
+        ideal_bytes = 0 if force_memory_zero else node["Ideal_Memory_Bytes"]
+        read_bytes = 0 if force_memory_zero else node["Read_Bytes"]
+        write_bytes = 0 if force_memory_zero else node["Write_Bytes"]
+        theoretical_ms = max(
+            ideal_bytes / self.peak_bandwidth * 1000,
+            1e-6,
+        )
+        distance0 = node["Input0_Reuse_Distance_Bytes"]
+        distance1 = node["Input1_Reuse_Distance_Bytes"]
+        input1_elements = node["Input1_Elements"]
+
+        row = {
+            "Batch_Size": batch_size,
+            "Output_Elements": node["Output_Elements"],
+            "Read_Bytes": read_bytes,
+            "Write_Bytes": write_bytes,
+            "Ideal_Memory_Bytes": ideal_bytes,
+            "Estimated_L2_Fit": int(ideal_bytes <= self.l2_cache_bytes),
+            "Precision_Bytes": node["Precision_Bytes"],
+            "Estimated_Wave_Count": math.ceil(node["Output_Elements"] / 1024) / self.sm_count,
+            "Is_Binary": node["Is_Binary"],
+            "Is_Broadcast": node["Is_Broadcast"],
+            "Rank": node["Rank"],
+            "Dim_0": node["Dim_0"],
+            "Dim_1": node["Dim_1"],
+            "Dim_2": node["Dim_2"],
+            "Dim_3": node["Dim_3"],
+            "Input0_Elements": node["Input0_Elements"],
+            "Input1_Elements": input1_elements,
+            "Input0_Reuse_Distance_Bytes": distance0,
+            "Input1_Reuse_Distance_Bytes": distance1,
+            "Input0_L2_Resident": int(distance0 + node["Input0_Bytes"] <= self.l2_cache_bytes),
+            "Input1_L2_Resident": int(input1_elements > 0 and distance1 + node["Input1_Bytes"] <= self.l2_cache_bytes),
+            "Max_Reuse_Distance_Bytes": max(distance0, distance1),
+            "Broadcast_Ratio": node["Broadcast_Ratio"],
+            "Is_Scalar_RHS": node["Is_Scalar_RHS"],
+            "Is_Comparison": node["Is_Comparison"],
+            "Is_Mask": node["Is_Mask"],
+            "Is_Activation": node["Is_Activation"],
+            "Is_Transcendental": node["Is_Transcendental"],
+        }
+        for name in POINTWISE_OPERATIONS:
+            row[f"Op_{name}"] = int(operation == name)
+        return base.BatchMLRequest(
+            "v7_pointwise", {"median": self.pointwise_median, "90th": self.pointwise_90th},
+            row, True, "Pointwise",
+            theoretical_ms, lambda y, t=theoretical_ms: t * max(np.expm1(y), 0),
+        )
+
 
 def prediction_family(layer_type):
     if str(layer_type).startswith("Pointwise_"):

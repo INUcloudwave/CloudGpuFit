@@ -13,9 +13,15 @@ Rules:
   * audio_encoder (Wav2Vec2/HuBERT-style encoder-only) is supported.
     audio_encdec (Whisper-style encoder-decoder) is still refused: it is a
     different workload that eager_runtime has not been calibrated for.
-  * mode=generate (decoder_llm / text_encdec) is accepted, but latency is
-    predicted for the prefill pass only (up to the first token's logits) --
-    eager_runtime has no decode-loop model. mode only changes VRAM (KV cache).
+  * mode: missing -> Generate for decoder_llm / text_encdec (Request E2E:
+    Prefill + cache-aware Decode, max_new_tokens default 128), prefill/forward
+    for vision_cls, audio_encoder, text_encoder. An explicit mode=prefill keeps
+    the previous first-token / forward prediction (mode/max_new_tokens
+    stripped, vCPU proxy unchanged).
+  * Generate on a proxy size (no target of its own): the same-GPU base
+    target's full Generate result is returned unscaled -- the Prefill vCPU
+    ratio is not applied -- marked generate_proxy_status
+    "unvalidated_same_gpu_base_target" with a warning.
 """
 from __future__ import annotations
 
@@ -28,6 +34,11 @@ from instance_filter import supported_instances
 SUPPORTED_WORKLOAD_TYPES = {"decoder_llm", "vision_cls", "text_encdec", "audio_encoder"}
 SUPPORTED_ENGINE_MODES = {"eager", "compiled"}
 GENERATE_WORKLOAD_TYPES = {"decoder_llm", "text_encdec"}
+GENERATE_PROXY_STATUS = "unvalidated_same_gpu_base_target"
+GENERATE_PROXY_WARNING = (
+    "Generate latency uses the measured same-GPU base target without vCPU scaling. "
+    "Host-size differences for this instance have not been validated."
+)
 _EXPLICITLY_UNSUPPORTED_TYPES = {
     "audio_encdec": (
         "audio_encdec (Whisper-style encoder-decoder) is not calibrated. Only "
@@ -60,7 +71,7 @@ def validate_payload(payload: Mapping[str, Any]) -> None:
             f"Runtime prediction only runs fp16 requests, got dtype={dtype!r}.",
         )
     workload_type = payload.get("type")
-    if _mode(payload) == "generate" and workload_type not in GENERATE_WORKLOAD_TYPES:
+    if effective_mode(payload) == "generate" and workload_type not in GENERATE_WORKLOAD_TYPES:
         raise UnsupportedRuntimeRequest(
             "unsupported_mode",
             f"mode=generate is only supported for {sorted(GENERATE_WORKLOAD_TYPES)}, "
@@ -77,22 +88,43 @@ def validate_payload(payload: Mapping[str, Any]) -> None:
         )
 
 
-def _mode(payload: Mapping[str, Any]) -> str:
+def effective_mode(payload: Mapping[str, Any]) -> str:
+    """Service policy: mode missing -> Generate for decoder_llm/text_encdec,
+    forward/prefill for every other type; an explicit mode is kept."""
     params = payload.get("params") or {}
-    return str(params.get("mode") or "prefill").lower()
+    mode = params.get("mode")
+    if not mode:
+        return "generate" if payload.get("type") in GENERATE_WORKLOAD_TYPES else "prefill"
+    return str(mode).lower()
+
+
+def validate_generate_inputs(payload: Mapping[str, Any]) -> None:
+    """Generate input limits (batch 128, seq_len 1024, max_new_tokens 1024,
+    default 128) -> 4xx-style rejection, never clamped."""
+    from generate import GenerateInputError, resolve_generate_inputs
+
+    try:
+        resolve_generate_inputs(_runtime_request(payload))
+    except GenerateInputError as exc:
+        raise UnsupportedRuntimeRequest(exc.error_code, exc.message) from exc
 
 
 def _runtime_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     # engine_mode is deliberately not part of the request: it is passed to
     # predict_runtime_targets() as its own argument, so there is exactly one
     # place that decides the mode.
-    # mode/max_new_tokens are stripped: eager_runtime only ever predicts the
-    # prefill forward pass, and refuses mode=generate outright.
-    params = {
-        key: value
-        for key, value in (payload.get("params") or {}).items()
-        if key not in {"mode", "max_new_tokens"}
-    }
+    if effective_mode(payload) == "generate":
+        # Generate Request E2E: mode/max_new_tokens are kept for eager_runtime.
+        params = dict(payload.get("params") or {})
+        params["mode"] = "generate"
+    else:
+        # mode/max_new_tokens are stripped: the prefill/forward path predicts
+        # the prefill forward pass only.
+        params = {
+            key: value
+            for key, value in (payload.get("params") or {}).items()
+            if key not in {"mode", "max_new_tokens"}
+        }
     return {
         "model": payload["model"],
         "type": payload.get("type"),
@@ -114,6 +146,8 @@ def predict_candidate_runtimes(
     try:
         validate_engine_mode(engine_mode)
         validate_payload(payload)
+        if effective_mode(payload) == "generate":
+            validate_generate_inputs(payload)
     except UnsupportedRuntimeRequest as exc:
         return {
             "status": "skipped",
@@ -159,7 +193,23 @@ def predict_candidate_runtimes(
     result = predict_runtime_targets(
         _runtime_request(payload), targets=unique_profiles, engine_mode=engine_mode
     )
-    by_profile = {p.get("target_instance"): p for p in result.get("predictions", [])}
+    base_predictions = result.get("predictions", [])
+    input_errors = {p.get("error_code") for p in base_predictions if p.get("error_code")}
+    if base_predictions and len(input_errors) == 1 and all(p.get("error_code") for p in base_predictions):
+        # Generate input rejected after the config was read (position limit,
+        # model config unavailable) -> same 4xx-style skip as validate_payload
+        first = base_predictions[0]
+        return {
+            "status": "skipped",
+            "error_code": first["error_code"],
+            "error_message": first.get("error"),
+            "engine_mode": engine_mode,
+            "requested_targets": candidate_list,
+            "succeeded": 0,
+            "failed": 0,
+            "predictions": [],
+        }
+    by_profile = {p.get("target_instance"): p for p in base_predictions}
     predictions = []
     for target, profile in profile_for.items():
         base = by_profile.get(profile)
@@ -168,7 +218,17 @@ def predict_candidate_runtimes(
         prediction = copy.deepcopy(base)
         if profile != target:
             prediction.update(instance_type=target, target_instance=target, latency_proxy_of=profile)
-            if prediction.get("status") == "ok":
+            # Generate Request E2E on a proxy size: the base target's full
+            # result, unscaled (the Prefill vCPU ratio is not applied), so
+            # median / P90 / throughput / breakdown stay consistent.
+            generate_proxy = (
+                prediction.get("status") == "ok"
+                and prediction.get("prediction_scope") == "generate_request_e2e"
+            )
+            if generate_proxy:
+                prediction["generate_proxy_status"] = GENERATE_PROXY_STATUS
+                prediction["warnings"] = [*(prediction.get("warnings") or []), GENERATE_PROXY_WARNING]
+            if prediction.get("status") == "ok" and not generate_proxy:
                 scale = specs[target]["latency_scale"]
                 for key in ("predicted_median_ms", "raw_predicted_median_ms", "predicted_p90_ms"):
                     if prediction.get(key) is not None:

@@ -326,6 +326,24 @@ class FXGraphParser:
         return [{'type': 'FusionGroup', 'base_op': node, 'absorbed_base_ops': [], 'tail_ops': []} for node in fx_nodes]
 
 
+class BatchMLRequest:
+    """One node's ML request for the opt-in batch API: the feature row built
+    exactly as the scalar _predict_node builds it, the specialist's median /
+    90th models, and how the scalar path turns the predicted log-ratio into
+    milliseconds (`finish`)."""
+
+    __slots__ = ("specialist", "models", "row", "reindex", "na_label", "theoretical_ms", "finish")
+
+    def __init__(self, specialist, models, row, reindex, na_label, theoretical_ms, finish):
+        self.specialist = specialist
+        self.models = models
+        self.row = row
+        self.reindex = reindex
+        self.na_label = na_label
+        self.theoretical_ms = theoretical_ms
+        self.finish = finish
+
+
 class SimulatorRouter:
     def __init__(self, engine_mode="eager"):
         if engine_mode != "eager":
@@ -481,6 +499,184 @@ class SimulatorRouter:
                 'Layer_Type': base_node['type'], 
                 'Log_Name': log_name,            
                 'Theoretical_ms': round(group_total_theo_ms, 4), 
+                'Predicted_Actual_ms': round(group_total_actual_ms, 4),
+                'Is_LM_Head': int(base_node.get('Is_LM_Head', 0)),
+            })
+        return total_time_ms, pd.DataFrame(simulation_log)
+
+    # ------------------------------------------------------------------
+    # Opt-in batch prediction API (used by Generate only).
+    #
+    # The scalar _predict_node / simulate_fx_graph above are unchanged and
+    # stay the default path (Prefill, Vision, Audio). Every router class that
+    # overrides _predict_node also defines _prepare_node with the same
+    # feature construction; the batch path groups rows by specialist, model
+    # pair and column schema, calls predict() once per group and mode,
+    # restores the original node order and then accumulates exactly like
+    # simulate_fx_graph. Scheduling / overlap / dispatch are not touched.
+    # ------------------------------------------------------------------
+    def _prepare_node(self, node, batch_size, force_memory_zero=False):
+        op_type = node.get('type')
+        if op_type in ['Conv2d', 'Conv1d', 'Linear', 'BMM', 'BMM_SDPA']:
+            M, N, K = node['M'], node['N'], node['K']
+            is_bmm, is_fused = node.get('Is_BMM', 0), node.get('Is_Fused', 0)
+
+            total_flops = 2 * M * N * K
+            if is_bmm and is_fused: total_flops *= 2
+
+            B_dim, M_true = node.get('B_dim', 1), node.get('M_true', M)
+            ideal_memory_bytes = 0 if force_memory_zero else (B_dim * (M_true * K + K * N + M_true * N) * self.precision_bytes if is_bmm else (M * K + K * N + M * N) * self.precision_bytes)
+
+            arithmetic_intensity = total_flops / ideal_memory_bytes if ideal_memory_bytes > 0 else 0
+            estimated_l2_fit = 1 if ideal_memory_bytes <= self.l2_cache_bytes else 0
+            estimated_wave_count = (math.ceil(M / 128.0) * math.ceil(N / 128.0)) / self.sm_count
+
+            theoretical_time_ms = max((total_flops / self.peak_flops) * 1000, (ideal_memory_bytes / self.peak_bandwidth) * 1000, 1e-6)
+
+            row = {
+                'Batch_Size': batch_size, 'Dim_M': M, 'Dim_N': N, 'Dim_K': K, 'Total_FLOPs': total_flops,
+                'Ideal_Memory_Bytes': ideal_memory_bytes, 'Arithmetic_Intensity': arithmetic_intensity,
+                'Estimated_L2_Fit': estimated_l2_fit, 'Orig_Kernel_Size': node.get('kernel_size', 1),
+                'Precision_Bytes': self.precision_bytes, 'Is_Conv1D': node.get('Is_Conv1D', 0),
+                'Is_Conv2D': node.get('Is_Conv2D', 0), 'Is_BMM': is_bmm, 'Is_Fused': is_fused,
+                'Estimated_Wave_Count': estimated_wave_count
+            }
+            return BatchMLRequest(
+                "v2_gemm", {"median": self.gemm_median, "90th": self.gemm_90th}, row, False, None,
+                theoretical_time_ms, lambda y, t=theoretical_time_ms: t * np.expm1(y),
+            )
+
+        output_elements = node.get('output_elements', node.get('elements', 0))
+        input_elements = node.get('input_elements', output_elements)
+        parameter_elements = node.get('parameter_elements', 0)
+        reduction_size = node.get('reduction_size', 1)
+        is_binary = node.get('is_binary', 0)
+        is_adaptive_pool = node.get('is_adaptive_pool', 0)
+
+        is_pool = 1 if "Pool" in op_type else 0
+        is_norm = 1 if "Norm" in op_type else 0
+        is_embedding = 1 if "Embedding" in op_type else 0
+        is_softmax = 1 if "Softmax" in op_type else 0
+        is_elementwise = 1 if not (is_pool or is_norm or is_embedding or is_softmax) else 0
+
+        if node.get('index_input', 0):
+            read_bytes = input_elements * 8 + parameter_elements * self.precision_bytes
+        else:
+            read_bytes = (input_elements + parameter_elements) * self.precision_bytes
+        write_bytes = output_elements * self.precision_bytes
+        ideal_memory_bytes = read_bytes + write_bytes
+
+        if force_memory_zero:
+            read_bytes = 0
+            write_bytes = 0
+            ideal_memory_bytes = 0
+
+        estimated_l2_fit = 1 if ideal_memory_bytes <= self.l2_cache_bytes else 0
+        estimated_wave_count = math.ceil(output_elements / 1024.0) / self.sm_count
+        theoretical_time_ms = max((ideal_memory_bytes / self.peak_bandwidth) * 1000, 1e-6)
+
+        row = {
+            'Batch_Size': batch_size, 'Total_Elements': output_elements,
+            'Input_Elements': input_elements, 'Output_Elements': output_elements,
+            'Parameter_Elements': parameter_elements, 'Read_Bytes': read_bytes,
+            'Write_Bytes': write_bytes, 'Reduction_Size': reduction_size,
+            'Ideal_Memory_Bytes': ideal_memory_bytes,
+            'Estimated_L2_Fit': estimated_l2_fit, 'Precision_Bytes': self.precision_bytes,
+            'Is_Fused': node.get('Is_Fused', 0), 'Estimated_Wave_Count': estimated_wave_count,
+            'Is_ElementWise': is_elementwise, 'Is_Pool': is_pool,
+            'Is_Norm': is_norm, 'Is_Softmax': is_softmax, 'Is_Embedding': is_embedding,
+            'Is_Binary': is_binary, 'Is_AdaptivePool': is_adaptive_pool
+        }
+        return BatchMLRequest(
+            "v2_reduction", {"median": self.red_median, "90th": self.red_90th}, row, False, None,
+            theoretical_time_ms, lambda y, t=theoretical_time_ms: t * np.expm1(y),
+        )
+
+    def _check_batch_support(self):
+        for cls in type(self).__mro__:
+            if "_predict_node" in cls.__dict__ and "_prepare_node" not in cls.__dict__:
+                raise NotImplementedError(
+                    f"{cls.__name__} overrides _predict_node without _prepare_node; "
+                    "use the scalar simulate_fx_graph path"
+                )
+
+    def predict_nodes_batch(self, nodes, batch_size, prediction_modes=("median", "90th")):
+        """nodes: [(node, force_memory_zero), ...] in graph order.
+        Returns {mode: [(actual_ms, theoretical_ms), ...]} in the same order."""
+        self._check_batch_support()
+        requests = [self._prepare_node(node, batch_size, force) for node, force in nodes]
+        out = {mode: [None] * len(requests) for mode in prediction_modes}
+        groups = {}
+        for index, request in enumerate(requests):
+            key = (
+                request.specialist,
+                id(request.models["median"]),
+                id(request.models["90th"]),
+                tuple(request.row.keys()),
+                request.reindex,
+                request.na_label,
+            )
+            groups.setdefault(key, []).append(index)
+        for indices in groups.values():
+            first = requests[indices[0]]
+            rows = [requests[i].row for i in indices]
+            for mode in prediction_modes:
+                booster = first.models["median"] if mode == "median" else first.models["90th"]
+                features = pd.DataFrame(rows)
+                if first.reindex:
+                    features = features.reindex(columns=booster.feature_name())
+                if first.na_label and features.isna().any().any():
+                    missing = features.columns[features.isna().any()].tolist()
+                    raise RuntimeError(f"Missing {first.na_label} features: " + ", ".join(missing))
+                ratios = booster.predict(features)
+                for position, index in enumerate(indices):
+                    request = requests[index]
+                    out[mode][index] = (request.finish(ratios[position]), request.theoretical_ms)
+        for mode in prediction_modes:
+            missing = [index for index, value in enumerate(out[mode]) if value is None]
+            if missing:
+                raise RuntimeError(
+                    f"batch prediction left {len(missing)} node(s) without a {mode} result "
+                    f"(first index {missing[0]})"
+                )
+        return out
+
+    def simulate_fx_graph_batch(self, fused_graph, batch_size, prediction_modes=("median", "90th")):
+        """Batch counterpart of simulate_fx_graph: {mode: (total_ms, log_df)}."""
+        groups = [group for group in fused_graph if group['type'] == 'FusionGroup']
+        nodes = []
+        for group in groups:
+            nodes.append((group['base_op'], False))
+            nodes.extend((tail, True) for tail in group['tail_ops'])
+        predictions = self.predict_nodes_batch(nodes, batch_size, prediction_modes)
+        return {
+            mode: self._simulate_from_predictions(groups, predictions[mode])
+            for mode in prediction_modes
+        }
+
+    def _simulate_from_predictions(self, groups, predictions):
+        # identical accumulation and log rows to simulate_fx_graph
+        total_time_ms, simulation_log = 0.0, []
+        position = 0
+        for group in groups:
+            base_node = group['base_op']
+            base_actual_ms, base_theo_ms = predictions[position]
+            position += 1
+            group_total_actual_ms = base_actual_ms
+            group_total_theo_ms = base_theo_ms
+            for _tail in group['tail_ops']:
+                tail_actual_ms, tail_theo_ms = predictions[position]
+                position += 1
+                group_total_actual_ms += tail_actual_ms
+                group_total_theo_ms += tail_theo_ms
+            total_time_ms += group_total_actual_ms
+            log_name = base_node['type']
+            if base_node.get('Is_Fused', 0) == 1: log_name += f" + {'+'.join(group['absorbed_base_ops'])}"
+            if len(group['tail_ops']) > 0: log_name += f" (+ Tail: {len(group['tail_ops'])} ops)"
+            simulation_log.append({
+                'Layer_Type': base_node['type'],
+                'Log_Name': log_name,
+                'Theoretical_ms': round(group_total_theo_ms, 4),
                 'Predicted_Actual_ms': round(group_total_actual_ms, 4),
                 'Is_LM_Head': int(base_node.get('Is_LM_Head', 0)),
             })

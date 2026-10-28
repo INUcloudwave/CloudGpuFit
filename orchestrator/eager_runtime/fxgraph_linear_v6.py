@@ -464,6 +464,78 @@ class LinearContextSimulatorRouter(sdpa_v5.SDPAAwareSimulatorRouter):
         predicted_ms = theoretical_ms * np.expm1(ratio_log)
         return predicted_ms, theoretical_ms
 
+    def _prepare_node(self, node, batch_size, force_memory_zero=False):
+        """Batch-API twin of _predict_node (same features, no predict)."""
+        if not (
+            node.get("type") == "Linear"
+            and node.get("Use_Transformer_Linear_Context", 0) == 1
+        ):
+            return super()._prepare_node(node, batch_size, force_memory_zero)
+
+        m, n, k = int(node["M"]), int(node["N"]), int(node["K"])
+        total_flops = 2 * m * n * k
+        bias_bytes = n * self.precision_bytes if node["Has_Bias"] else 0
+        ideal_bytes = (
+            0
+            if force_memory_zero
+            else (m * k + k * n + m * n) * self.precision_bytes + bias_bytes
+        )
+        theoretical_ms = max(
+            total_flops / self.peak_flops * 1000,
+            ideal_bytes / self.peak_bandwidth * 1000,
+            1e-6,
+        )
+        row = {
+            "Batch_Size": batch_size,
+            "Dim_M": m,
+            "Dim_N": n,
+            "Dim_K": k,
+            "Total_FLOPs": total_flops,
+            "Ideal_Memory_Bytes": ideal_bytes,
+            "Arithmetic_Intensity": total_flops / max(ideal_bytes, 1),
+            "Estimated_L2_Fit": int(ideal_bytes <= self.l2_cache_bytes),
+            "Orig_Kernel_Size": node.get("kernel_size", 1),
+            "Precision_Bytes": self.precision_bytes,
+            "Is_Conv1D": 0,
+            "Is_Conv2D": 0,
+            "Is_BMM": 0,
+            "Is_Fused": node.get("Is_Fused", 0),
+            "Estimated_Wave_Count": (
+                math.ceil(m / 128.0)
+                * math.ceil(n / 128.0)
+                / self.sm_count
+            ),
+            "Weight_Bytes": node["Weight_Bytes"],
+            "RHS_Is_Transposed": node["RHS_Is_Transposed"],
+            "Estimated_Weight_L2_Resident": node[
+                "Estimated_Weight_L2_Resident"
+            ],
+            "Reuse_Distance_Bytes": node["Reuse_Distance_Bytes"],
+            "Context_Working_Set_Bytes": node["Context_Working_Set_Bytes"],
+            "Sequence_Length": node["Sequence_Length"],
+            "Hidden_Size": node["Hidden_Size"],
+            "Intermediate_Size": node["Intermediate_Size"],
+            "Block_Depth": node["Block_Depth"],
+            "Layer_Position": node["Layer_Position"],
+            "Projection_Index": node["Projection_Index"],
+            "Is_QKV": node["Is_QKV"],
+            "Is_AttentionOut": node["Is_AttentionOut"],
+            "Is_FFNUp": node["Is_FFNUp"],
+            "Is_FFNDown": node["Is_FFNDown"],
+            "Has_Bias": node["Has_Bias"],
+            "Previous_Linear_Weight_Bytes": node[
+                "Previous_Linear_Weight_Bytes"
+            ],
+            "Previous_Op_Gap_Bytes": node["Previous_Op_Gap_Bytes"],
+            "Is_Transformer_Context": 1,
+        }
+        return base.BatchMLRequest(
+            "v6_linear_context",
+            {"median": self.linear_context_median, "90th": self.linear_context_90th},
+            row, True, "Transformer Linear",
+            theoretical_ms, lambda y, t=theoretical_ms: t * np.expm1(y),
+        )
+
 
 def main():
     base.FXGraphParser = LinearContextFXGraphParser

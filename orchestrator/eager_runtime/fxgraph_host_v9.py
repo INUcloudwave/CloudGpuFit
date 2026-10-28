@@ -49,6 +49,33 @@ class HostScheduleSimulatorRouter(v8.FidelitySimulatorRouter):
         )
         return total_ms, log_df
 
+    def simulate_fx_graph_batch(
+        self,
+        fused_graph,
+        batch_size,
+        prediction_modes=("median", "90th"),
+    ):
+        """Batch-API twin of simulate_fx_graph (same attrs)."""
+        metadata = next(
+            (
+                item
+                for item in fused_graph
+                if item.get("type") == "WorkloadMetadata"
+            ),
+            {},
+        )
+        results = super().simulate_fx_graph_batch(
+            fused_graph,
+            batch_size,
+            prediction_modes,
+        )
+        for _total_ms, log_df in results.values():
+            log_df.attrs["workload_family"] = metadata.get("family", "unknown")
+            log_df.attrs["input_batch_size"] = int(
+                metadata.get("batch_size", batch_size)
+            )
+        return results
+
     def _schedule_scale(self, log_df):
         if self.engine_mode != "eager":
             return 1.0

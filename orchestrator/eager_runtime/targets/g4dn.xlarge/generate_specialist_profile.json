@@ -1,0 +1,36 @@
+{
+  "schema_version": 3,
+  "target_instance": "g4dn.xlarge",
+  "index_gather": {
+    "method": "operation_bytes_over_heldout_validated_effective_bandwidth",
+    "effective_bandwidth_bytes_per_second": 61960982357.00936,
+    "small_kernel_floor_ms": 0.0030506666666669843,
+    "calibration_cache_lengths": [
+      128,
+      512,
+      2048
+    ],
+    "model_name_is_feature": false
+  },
+  "generate_host_schedule": {
+    "method": "target_hardware_profile",
+    "t_dispatch_light_ms": 0.010553609999988112,
+    "t_dispatch_heavy_ms": 0.022555470000042988,
+    "t_sync_ms": 0.005491271999972014,
+    "calibration_models": [],
+    "model_name_is_feature": false
+  },
+  "generate_control": {
+    "method": "disabled",
+    "eager": {
+      "startup_ms": 0.0,
+      "per_decode_step_ms": 0.0
+    },
+    "compiled": {
+      "startup_ms": 0.0,
+      "per_decode_step_ms": 0.0
+    },
+    "calibration_models": [],
+    "model_name_is_feature": false
+  }
+}

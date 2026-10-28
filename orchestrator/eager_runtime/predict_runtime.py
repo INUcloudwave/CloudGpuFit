@@ -82,6 +82,90 @@ _P90_STATUS = {
 }
 
 
+GENERATE_WORKLOAD_TYPES = {"decoder_llm", "text_encdec"}
+
+
+def _is_generate_request(payload: Mapping[str, Any]) -> bool:
+    """Generate only on an explicit params.mode == "generate" for text
+    workloads. The service default (mode missing -> Generate for
+    decoder_llm/text_encdec) is applied by the caller's adapter, so a request
+    without mode keeps this module's previous behaviour."""
+    params = payload.get("params") or {}
+    return (
+        payload.get("type") in GENERATE_WORKLOAD_TYPES
+        and str(params.get("mode") or "").lower() == "generate"
+    )
+
+
+def _with_generate_config(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Request with model_config filled in.
+
+    model_config_snapshot / model_config given -> used as is. Missing -> the
+    existing Prefill loader (predict_eager_runtime.load_config, i.e.
+    AutoConfig.from_pretrained(model, trust_remote_code=False)), called once;
+    the dict is then shared by every target, the Graph extraction and the
+    Prefill fallback (which therefore does not fetch it again)."""
+    request = dict(payload)
+    if request.get("model_config") is None:
+        config = predict_eager_runtime.load_config(str(request.get("model", "")), request)
+        request["model_config"] = config.to_dict()
+        request["model_config_source"] = "autoconfig"
+    return request
+
+
+def _predict_generate(
+    payload: Mapping[str, Any],
+    targets: list[str],
+    engine_mode: str,
+    raise_on_error: bool,
+) -> list[dict[str, Any]]:
+    """Generate Request E2E for several targets (graphs extracted once)."""
+    from generate import GenerateInputError, predict_generate_targets
+
+    def prefill(request: Mapping[str, Any], target: str, mode: str) -> dict[str, Any]:
+        return predict_runtime(request, target_instance=target, engine_mode=mode, raise_on_error=raise_on_error)
+
+    model_name = str(payload.get("model", ""))
+    try:
+        request = _with_generate_config(payload)
+    except Exception as exc:  # noqa: BLE001 - network / gated / unknown model
+        if raise_on_error:
+            raise
+        return [
+            {
+                **_error_result(error=exc, model=model_name, instance_type=target, engine_mode=engine_mode),
+                "error_code": "model_config_unavailable",
+            }
+            for target in targets
+        ]
+    config_source = request.get("model_config_source", "model_config_snapshot")
+    try:
+        results = predict_generate_targets(
+            request, targets, engine_mode=engine_mode, runtime_root=_MODULE_ROOT, prefill_predict=prefill
+        )
+    except GenerateInputError as exc:
+        if raise_on_error:
+            raise
+        return [
+            {
+                **_error_result(error=exc, model=model_name, instance_type=target, engine_mode=engine_mode),
+                "error_code": exc.error_code,
+            }
+            for target in targets
+        ]
+    for result in results:
+        target = result["target_instance"]
+        result["engine_mode"] = engine_mode
+        result["instance_type"] = target
+        result.setdefault("model", model_name)
+        result.setdefault("workload_type", payload.get("type"))
+        result.setdefault("dtype", payload.get("dtype"))
+        result["model_config_source"] = config_source
+        if result.get("status") == "ok":
+            result["profile_provenance"] = target_provenance(target)
+    return results
+
+
 def _compiled_artifacts_present(runtime_root: Path, target: str) -> bool:
     """Cheap presence check (file existence only, no hash/size verification --
     that's what ``verify_runtime_artifacts.py`` is for) used by
@@ -361,6 +445,9 @@ def predict_runtime(
             engine_mode=selected_mode,
         )
 
+    if _is_generate_request(payload):
+        return _predict_generate(payload, [selected_target], selected_mode, raise_on_error)[0]
+
     predictor = (
         predict_eager_runtime.predict_runtime
         if selected_mode == "eager"
@@ -421,15 +508,26 @@ def predict_runtime_targets(
             "error": str(error),
         }
 
-    predictions = [
-        predict_runtime(
-            request,
-            target_instance=target,
-            engine_mode=engine_mode,
-            raise_on_error=raise_on_error,
-        )
-        for target in selected_targets
-    ]
+    selected_mode = str(engine_mode or request.get("engine_mode") or DEFAULT_ENGINE_MODE).lower()
+    if _is_generate_request(request) and selected_mode in SUPPORTED_ENGINE_MODES:
+        installed = set(available_targets(engine_mode=selected_mode))
+        runnable = [t for t in selected_targets if t in installed]
+        generated = iter(_predict_generate(request, runnable, selected_mode, raise_on_error) if runnable else [])
+        predictions = [
+            next(generated) if target in installed
+            else predict_runtime(request, target_instance=target, engine_mode=engine_mode, raise_on_error=raise_on_error)
+            for target in selected_targets
+        ]
+    else:
+        predictions = [
+            predict_runtime(
+                request,
+                target_instance=target,
+                engine_mode=engine_mode,
+                raise_on_error=raise_on_error,
+            )
+            for target in selected_targets
+        ]
     succeeded = sum(item.get("status") == "ok" for item in predictions)
     if succeeded == len(predictions):
         status = "ok"

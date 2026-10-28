@@ -48,7 +48,10 @@ VRAM_PREDICTOR_VERSION = "2"
 # "4": candidates are only instances with their own target (the 25-size vCPU
 # proxy and latency_scale_for_vcpu are gone), audio_encoder accepted, and
 # compiled_context_calibration.json is fingerprinted.
-RUNTIME_PIPELINE_VERSION = "4"
+# "5": Generate Request E2E (Prefill + cache-aware Decode; mode default
+# generate for decoder_llm/text_encdec), Generate artifacts + code +
+# torch/transformers versions fingerprinted.
+RUNTIME_PIPELINE_VERSION = "5"
 
 
 def eager_runtime_manifest_fingerprint(eager_runtime_root: Path) -> str:
@@ -71,6 +74,9 @@ def eager_runtime_manifest_fingerprint(eager_runtime_root: Path) -> str:
         "*/compiled_external_model/compiled_external_manifest.json",
         "*/compiled_fusion_model/compiled_fusion_manifest.json",
         "*/compiled_context_calibration.json",
+        # Generate artifacts (generate_specialist_profile.json and the
+        # Generate host model), each pinned by sha256 in this manifest.
+        "*/generate_manifest.json",
     )
     fingerprints = []
     for pattern in manifest_globs:
@@ -84,6 +90,26 @@ def eager_runtime_manifest_fingerprint(eager_runtime_root: Path) -> str:
     return ",".join(fingerprints) or "no-manifests"
 
 
+def generate_code_fingerprint(eager_runtime_root: Path) -> str:
+    """eager_runtime/generate/*.py contents: a Generate code change changes
+    predictions without touching any target manifest."""
+    parts = []
+    for path in sorted((eager_runtime_root / "generate").glob("*.py")):
+        parts.append(f"{path.name}:{hashlib.sha256(path.read_bytes()).hexdigest()[:16]}")
+    return ",".join(parts) or "no-generate"
+
+
+def runtime_library_versions() -> dict[str, str]:
+    """Generate graphs are torch.export'ed with the installed torch/transformers."""
+    try:
+        import torch
+        import transformers
+
+        return {"torch": torch.__version__, "transformers": transformers.__version__}
+    except ImportError:
+        return {"torch": "missing", "transformers": "missing"}
+
+
 def pipeline_cache_key_for(
     xmem_args: dict[str, Any],
     payload: dict[str, Any],
@@ -95,6 +121,8 @@ def pipeline_cache_key_for(
         "vram_predictor_version": VRAM_PREDICTOR_VERSION,
         "runtime_pipeline_version": RUNTIME_PIPELINE_VERSION,
         "eager_runtime_manifests": eager_runtime_manifest_fingerprint(eager_runtime_root),
+        "generate_code": generate_code_fingerprint(eager_runtime_root),
+        "runtime_libraries": runtime_library_versions(),
         "instance_catalog_version": catalog_version,
         "xmem_args": xmem_args,
         # xmem_args already carries model/batch_size/params; deployment and

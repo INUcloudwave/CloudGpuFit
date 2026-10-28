@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "target_instance": "g5.xlarge",
+  "feature": "generate_runtime_prediction",
+  "source_bundle": "claude_generate_integration_v45",
+  "artifacts": [
+    {
+      "path": "generate_specialist_profile.json",
+      "size_bytes": 616,
+      "sha256": "99d7a0730999a48fb5a3c5a8b7bceb7077552804ae8a4c3019fcf4b4bb6e8129"
+    },
+    {
+      "path": "generate_eager_host_model/generate_eager_host_manifest.json",
+      "size_bytes": 1563,
+      "sha256": "4051f3143c832c267ecec78caa8fcff82d7f26d2faaad160b85bfd34325e87ec"
+    },
+    {
+      "path": "generate_eager_host_model/generate_eager_host_model.txt",
+      "size_bytes": 223441,
+      "sha256": "96dac2a9696ce4f4ceaf6c0cd85873fd29f5a91739551eee5ec5908e84e52595"
+    }
+  ]
+}

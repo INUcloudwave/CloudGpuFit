@@ -196,6 +196,47 @@ class FidelitySimulatorRouter(v7.PointwiseContextSimulatorRouter):
         log_df.attrs.update(correction)
         return total_ms, log_df
 
+    def simulate_fx_graph_batch(
+        self,
+        fused_graph,
+        batch_size,
+        prediction_modes=("median", "90th"),
+    ):
+        """Batch-API twin of simulate_fx_graph (same metadata handling)."""
+        metadata = next(
+            (
+                item
+                for item in fused_graph
+                if item.get("type") == "FidelityMetadata"
+            ),
+            None,
+        )
+        graph = [
+            item
+            for item in fused_graph
+            if item.get("type") not in {"FidelityMetadata", "WorkloadMetadata"}
+        ]
+        results = super().simulate_fx_graph_batch(graph, batch_size, prediction_modes)
+        for mode, (total_ms, log_df) in results.items():
+            correction = {
+                "fidelity_correction_ms": 0.0,
+                "fidelity_guard_gpu_ms": 0.0,
+                "fidelity_guard_cpu_ms": 0.0,
+                "fidelity_guard_count": 0,
+                "fidelity_sequence_length": 0,
+                "fidelity_encoder_sequence_length": 0,
+                "fidelity_decoder_sequence_length": 0,
+                "fidelity_mode": "none",
+            }
+            if metadata is not None and metadata["family"] == "t5":
+                correction = self._t5_fidelity_correction(
+                    metadata,
+                    batch_size,
+                    total_ms,
+                )
+            log_df.attrs.update(correction)
+        return results
+
     def _t5_fidelity_correction(self, metadata, batch_size, fx_kernel_ms):
         guard_count = metadata["guard_count"]
         reference_guards = 30.0

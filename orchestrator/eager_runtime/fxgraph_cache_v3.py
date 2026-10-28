@@ -212,6 +212,64 @@ class CacheAwareSimulatorRouter(base.SimulatorRouter):
         predicted_ms = theoretical_time_ms * np.expm1(ratio_log)
         return predicted_ms, theoretical_time_ms
 
+    def _prepare_node(self, node, batch_size, force_memory_zero=False):
+        """Batch-API twin of _predict_node (same features, no predict)."""
+        op_type = node.get("type")
+        if op_type not in base.HEAVY_TYPES:
+            return super()._prepare_node(node, batch_size, force_memory_zero)
+
+        m, n, k = node["M"], node["N"], node["K"]
+        is_bmm = node.get("Is_BMM", 0)
+        is_fused = node.get("Is_Fused", 0)
+        total_flops = 2 * m * n * k
+        if is_bmm and is_fused:
+            total_flops *= 2
+
+        ideal_memory_bytes = 0 if force_memory_zero else _gemm_ideal_bytes(node)
+        arithmetic_intensity = (
+            total_flops / ideal_memory_bytes if ideal_memory_bytes > 0 else 0
+        )
+        theoretical_time_ms = max(
+            total_flops / self.peak_flops * 1000,
+            ideal_memory_bytes / self.peak_bandwidth * 1000,
+            1e-6,
+        )
+
+        row = {
+            "Batch_Size": batch_size,
+            "Dim_M": m,
+            "Dim_N": n,
+            "Dim_K": k,
+            "Total_FLOPs": total_flops,
+            "Ideal_Memory_Bytes": ideal_memory_bytes,
+            "Arithmetic_Intensity": arithmetic_intensity,
+            "Estimated_L2_Fit": int(ideal_memory_bytes <= self.l2_cache_bytes),
+            "Orig_Kernel_Size": node.get("kernel_size", 1),
+            "Precision_Bytes": self.precision_bytes,
+            "Is_Conv1D": node.get("Is_Conv1D", 0),
+            "Is_Conv2D": node.get("Is_Conv2D", 0),
+            "Is_BMM": is_bmm,
+            "Is_Fused": is_fused,
+            "Estimated_Wave_Count": (
+                math.ceil(m / 128.0)
+                * math.ceil(n / 128.0)
+                / self.sm_count
+            ),
+            "Weight_Bytes": node.get("Weight_Bytes", 0),
+            "RHS_Is_Transposed": node.get("RHS_Is_Transposed", 0),
+            "Estimated_Weight_L2_Resident": node.get(
+                "Estimated_Weight_L2_Resident", 1
+            ),
+            "Reuse_Distance_Bytes": node.get("Reuse_Distance_Bytes", 0),
+            "Context_Working_Set_Bytes": node.get(
+                "Context_Working_Set_Bytes", ideal_memory_bytes
+            ),
+        }
+        return base.BatchMLRequest(
+            "v3_gemm_cache", {"median": self.gemm_median, "90th": self.gemm_90th}, row, True, None,
+            theoretical_time_ms, lambda y, t=theoretical_time_ms: t * np.expm1(y),
+        )
+
 
 def main():
     # run_all_simulations resolves these names from the imported module.

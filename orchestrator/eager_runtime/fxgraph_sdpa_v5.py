@@ -206,6 +206,67 @@ class SDPAAwareSimulatorRouter(memory_v4.MemoryAwareSimulatorRouter):
         ratio = max(float(np.expm1(booster.predict(features)[0])), 0.0)
         return theoretical_ms * ratio, theoretical_ms
 
+    def _prepare_node(self, node, batch_size, force_memory_zero=False):
+        """Batch-API twin of _predict_node (same features, no predict)."""
+        if node.get("type") != "BMM_SDPA" or not node.get(
+            "Use_SDPA_Specialist", 0
+        ):
+            return super()._prepare_node(node, batch_size, force_memory_zero)
+
+        batch = node["SDPA_Batch_Size"]
+        query_heads = node["Num_Query_Heads"]
+        kv_heads = node["Num_KV_Heads"]
+        query_length = node["Query_Length"]
+        key_length = node["Key_Length"]
+        head_dim = node["Head_Dim"]
+        precision = node["Precision_Bytes"]
+        score_elements = batch * query_heads * query_length * key_length
+        total_flops = 4 * score_elements * head_dim + 5 * score_elements
+
+        query_elements = batch * query_heads * query_length * head_dim
+        kv_elements = 2 * batch * kv_heads * key_length * head_dim
+        output_elements = query_elements
+        mask_elements = (
+            batch * query_length * key_length if node["Has_Mask"] else 0
+        )
+        ideal_bytes = (
+            query_elements + kv_elements + output_elements + mask_elements
+        ) * precision
+        theoretical_ms = max(
+            total_flops / self.peak_flops * 1000,
+            ideal_bytes / self.peak_bandwidth * 1000,
+            1e-6,
+        )
+        wave_count = (
+            batch
+            * query_heads
+            * math.ceil(query_length / 128.0)
+            * math.ceil(key_length / 128.0)
+            / SM_COUNT
+        )
+        row = {
+            "Batch_Size": batch,
+            "Num_Query_Heads": query_heads,
+            "Num_KV_Heads": kv_heads,
+            "Query_Length": query_length,
+            "Key_Length": key_length,
+            "Head_Dim": head_dim,
+            "Mask_Type": node["Mask_Type"],
+            "Has_Mask": node["Has_Mask"],
+            "Is_Causal": node["Is_Causal"],
+            "Is_GQA": node["Is_GQA"],
+            "Precision_Bytes": precision,
+            "Total_FLOPs": total_flops,
+            "Ideal_Memory_Bytes": ideal_bytes,
+            "Arithmetic_Intensity": total_flops / ideal_bytes,
+            "Estimated_L2_Fit": int(ideal_bytes <= self.l2_cache_bytes),
+            "Estimated_Wave_Count": wave_count,
+        }
+        return base.BatchMLRequest(
+            "v5_sdpa", {"median": self.sdpa_median, "90th": self.sdpa_90th}, row, True, None,
+            theoretical_ms, lambda y, t=theoretical_ms: t * max(float(np.expm1(y)), 0.0),
+        )
+
 
 def main():
     base.FXGraphParser = SDPAAwareFXGraphParser

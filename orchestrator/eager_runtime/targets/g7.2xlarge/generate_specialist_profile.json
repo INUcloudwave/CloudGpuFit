@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "target_instance": "g7.2xlarge",
+  "generate_host_schedule": {
+    "method": "target_hardware_profile",
+    "t_dispatch_light_ms": 0.006532259999971757,
+    "t_dispatch_heavy_ms": 0.00968841999963388,
+    "t_sync_ms": 0.002947941999991599,
+    "calibration_models": [],
+    "model_name_is_feature": false
+  },
+  "generate_control": {
+    "method": "disabled",
+    "eager": {
+      "startup_ms": 0.0,
+      "per_decode_step_ms": 0.0
+    },
+    "compiled": {
+      "startup_ms": 0.0,
+      "per_decode_step_ms": 0.0
+    },
+    "calibration_models": [],
+    "model_name_is_feature": false
+  }
+}

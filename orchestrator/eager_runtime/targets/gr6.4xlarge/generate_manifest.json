@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "target_instance": "gr6.4xlarge",
+  "feature": "generate_runtime_prediction",
+  "source_bundle": "gr6_generate_final_v42_checkpoint_20261023",
+  "artifacts": [
+    {
+      "path": "generate_specialist_profile.json",
+      "size_bytes": 621,
+      "sha256": "4393a8d0d70c7b2875e78fdd7d72b161202e02557dd59ff43ea4ec1870729878"
+    },
+    {
+      "path": "generate_eager_host_model/generate_eager_host_manifest.json",
+      "size_bytes": 1565,
+      "sha256": "2c52fcc00dbd3717b78115dca8cb7f76178241d4614a970d24d112b17059c4db"
+    },
+    {
+      "path": "generate_eager_host_model/generate_eager_host_model.txt",
+      "size_bytes": 206155,
+      "sha256": "41a598c3cc8d6ff66d9a0ea9f7b5dafef436c1938d4eccb8280fc2e6d1f8d1cf"
+    }
+  ]
+}

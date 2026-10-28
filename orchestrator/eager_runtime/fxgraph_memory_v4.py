@@ -290,6 +290,41 @@ class MemoryAwareSimulatorRouter(cache_v3.CacheAwareSimulatorRouter):
         predicted_ms = theoretical_ms * np.expm1(ratio_log)
         return predicted_ms, theoretical_ms
 
+    def _prepare_node(self, node, batch_size, force_memory_zero=False):
+        """Batch-API twin of _predict_node (same features, no predict)."""
+        if node.get("type") != "MemoryCopy":
+            return super()._prepare_node(node, batch_size, force_memory_zero)
+
+        ideal_bytes = 0 if force_memory_zero else node["Ideal_Memory_Bytes"]
+        theoretical_ms = max(
+            ideal_bytes / self.peak_bandwidth * 1000,
+            1e-6,
+        )
+        row = {
+            "Batch_Size": batch_size,
+            "Rank": node["Rank"],
+            "Dim_0": node["Dim_0"],
+            "Dim_1": node["Dim_1"],
+            "Dim_2": node["Dim_2"],
+            "Dim_3": node["Dim_3"],
+            "Total_Elements": node["output_elements"],
+            "Input_Bytes": 0 if force_memory_zero else node["Input_Bytes"],
+            "Output_Bytes": 0 if force_memory_zero else node["Output_Bytes"],
+            "Ideal_Memory_Bytes": ideal_bytes,
+            "Estimated_L2_Fit": int(ideal_bytes <= self.l2_cache_bytes),
+            "Input_Precision_Bytes": node["Input_Precision_Bytes"],
+            "Output_Precision_Bytes": node["Output_Precision_Bytes"],
+            "Source_Contiguous": node["Source_Contiguous"],
+            "Inner_Contiguous_Elements": node["Inner_Contiguous_Elements"],
+            "Is_Transpose_Last2": node["Is_Transpose_Last2"],
+            "Is_Permute_Axis12": node["Is_Permute_Axis12"],
+            "Is_Dtype_Conversion": node["Is_Dtype_Conversion"],
+        }
+        return base.BatchMLRequest(
+            "v4_memory", {"median": self.memory_median, "90th": self.memory_90th}, row, True, None,
+            theoretical_ms, lambda y, t=theoretical_ms: t * np.expm1(y),
+        )
+
 
 original_prediction_family = base.prediction_family
 
