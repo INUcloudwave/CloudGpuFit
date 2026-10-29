@@ -202,29 +202,40 @@ def validate_generate_target(runtime_root: Path, target: str) -> None:
 # caches (GUIDE section 11)
 # --------------------------------------------------------------------------
 class _LRU(OrderedDict):
+    _MISSING = object()
+
     def __init__(self, size: int):
         super().__init__()
         self.size = size
+        self._lock = threading.RLock()  # OrderedDict reordering is not thread-safe
 
     def put(self, key, value):
         """Insert (or refresh) with eviction; the only way entries are added."""
-        if key in self:
-            self.move_to_end(key)
-        self[key] = value
-        while len(self) > self.size:
-            self.popitem(last=False)
-        return value
+        with self._lock:
+            if key in self:
+                self.move_to_end(key)
+            self[key] = value
+            while len(self) > self.size:
+                self.popitem(last=False)
+            return value
+
+    def lookup(self, key, default=None):
+        with self._lock:
+            if key in self:
+                self.move_to_end(key)
+                return self[key]
+            return default
 
     def get_or(self, key, factory):
-        if key in self:
-            self.move_to_end(key)
-            return self[key]
+        value = self.lookup(key, self._MISSING)
+        if value is not self._MISSING:
+            return value
         return self.put(key, factory())
 
 
 _GRAPH_CACHE = _LRU(24)        # (fingerprint, workload, batch, seq_len, phase, anchor, dtype, torch, transformers)
 _PHASE_CACHE = _LRU(4096)      # + engine_mode, target, prediction_mode
-_FAILURE_CACHE = _LRU(256)     # graph extraction failures (fingerprint, workload, batch, seq_len)
+_FAILURE_CACHE = _LRU(256)     # no longer filled: extraction failures are not cached (next request retries)
 _EAGER_ROUTERS: dict[str, Any] = {}
 _COMPILED_ROUTERS: dict[str, Any] = {}
 
@@ -287,26 +298,43 @@ class ExtractedRequest:
         self.fingerprint = fingerprint
 
 
+def _cached_request_graphs(prefill_key, decode_keys) -> tuple[Any, dict] | None:
+    extracted = _GRAPH_CACHE.lookup(prefill_key)
+    if extracted is None:
+        return None
+    decode = {anchor: _GRAPH_CACHE.lookup(key) for anchor, key in decode_keys.items()}
+    if any(graph is None for graph in decode.values()):
+        return None
+    return extracted, decode
+
+
 def extract_request_graphs(snapshot: dict, workload: str, batch: int, seq_len: int, anchors: list[int]) -> ExtractedRequest:
+    """Prefill + Decode graphs for one request.
+
+    Only a complete, validated set (Prefill and every Decode anchor) is
+    registered in the cache, and only after all of them succeeded; a failure
+    is raised to this request only and is not cached, so the next request
+    retries. Extraction runs under eg.EXPORT_LOCK; the cache is checked again
+    after acquiring it because a waiting request may already have built it."""
     fingerprint = eg.config_fingerprint(snapshot)
-    failure_key = (fingerprint, workload, batch, seq_len, tuple(anchors))
-    if failure_key in _FAILURE_CACHE:
-        raise _FAILURE_CACHE[failure_key]
-    try:
-        extracted = _GRAPH_CACHE.get_or(
-            _graph_key(fingerprint, workload, batch, seq_len, "prefill", 0),
-            lambda: eg.extract_prefill(snapshot, workload, batch, seq_len),
-        )
-        decode = {
-            anchor: _GRAPH_CACHE.get_or(
-                _graph_key(fingerprint, workload, batch, seq_len, "decode", anchor),
-                lambda anchor=anchor: eg.extract_decode(extracted, anchor),
-            )
-            for anchor in anchors
-        }
-    except eg.GenerateGraphError as exc:
-        _FAILURE_CACHE.get_or(failure_key, lambda: exc)
-        raise
+    prefill_key = _graph_key(fingerprint, workload, batch, seq_len, "prefill", 0)
+    decode_keys = {anchor: _graph_key(fingerprint, workload, batch, seq_len, "decode", anchor) for anchor in anchors}
+    cached = _cached_request_graphs(prefill_key, decode_keys)
+    if cached is None:
+        with eg.EXPORT_LOCK:
+            cached = _cached_request_graphs(prefill_key, decode_keys)
+            if cached is None:
+                extracted = _GRAPH_CACHE.lookup(prefill_key) or eg.extract_prefill(snapshot, workload, batch, seq_len)
+                decode = {
+                    anchor: _GRAPH_CACHE.lookup(key) or eg.extract_decode(extracted, anchor)
+                    for anchor, key in decode_keys.items()
+                }
+                # everything extracted and validated -> register (complete objects only)
+                _GRAPH_CACHE.put(prefill_key, extracted)
+                for anchor, key in decode_keys.items():
+                    _GRAPH_CACHE.put(key, decode[anchor])
+                cached = (extracted, decode)
+    extracted, decode = cached
     return ExtractedRequest(extracted, decode, fingerprint)
 
 

@@ -26,6 +26,7 @@ from typing import Any
 import torch
 
 import fxgraph_host_v9 as host_v9
+from predict_eager_runtime import _RUNTIME_LOCK as TARGET_ENVIRONMENT_LOCK
 import fxgraph_linear_v6 as linear_v6
 from compiled_external_model import CompiledExternalKernelRouter
 from compiled_fusion_boundary_model import load_boundary_predictor
@@ -721,13 +722,19 @@ def eager_target_environment(root: Path, target: str):
         "EAGER_TARGET_ROOT", "EAGER_BASE_MODEL_DIR", "CACHE_MODEL_DIR", "MEMORY_MODEL_DIR", "SDPA_MODEL_DIR",
         "LINEAR_CONTEXT_MODEL_DIR", "POINTWISE_MODEL_DIR", "EAGER_HARDWARE_PROFILE", "GENERATE_SPECIALIST_PROFILE",
     )
-    saved = {name: os.environ.get(name) for name in names}
-    configure_eager_target(root, target)
-    try:
-        yield
-    finally:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+    # The target is selected through process environment variables, so the
+    # whole set-use-restore section is serialized with the same RLock the
+    # existing Prefill path holds for its own target environment
+    # (predict_eager_runtime.runtime_context): concurrent requests for
+    # different targets -- Generate or Prefill -- never see each other's paths.
+    with TARGET_ENVIRONMENT_LOCK:
+        saved = {name: os.environ.get(name) for name in names}
+        try:
+            configure_eager_target(root, target)
+            yield
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value

@@ -453,11 +453,18 @@ def predict_runtime(
         if selected_mode == "eager"
         else predict_compiled_runtime.predict_runtime
     )
-    result = predictor(
-        payload,
-        target=selected_target,
-        raise_on_error=raise_on_error,
-    )
+    # Graph tracing (FX for Prefill/forward, torch.export for Generate) patches
+    # process-global torch state; concurrent traces corrupt it for the rest of
+    # the process. Every graph-building prediction in the process is therefore
+    # serialized on one RLock -- the one predict_eager_runtime already holds
+    # for its target environment, and generate.export_graph.EXPORT_LOCK.
+    # Values are unchanged; only concurrent calls run one at a time.
+    with predict_eager_runtime._RUNTIME_LOCK:
+        result = predictor(
+            payload,
+            target=selected_target,
+            raise_on_error=raise_on_error,
+        )
     return _normalize_result(
         result,
         engine_mode=selected_mode,

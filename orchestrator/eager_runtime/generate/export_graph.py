@@ -34,12 +34,38 @@ import inspect
 import json
 import re
 import textwrap
+import threading
+from functools import wraps
 from dataclasses import dataclass, field
 from types import MethodType
 from typing import Any, Iterable
 
 import torch
 from torch import nn
+
+# One process-wide lock for every graph trace. torch.export, FakeTensor/meta
+# model construction (torch.set_default_dtype) and the temporary export-time
+# patches all touch process-global state; two exports at once corrupt torch's
+# tracing mode stack ("Trying to pop empty mode stack"), and an export running
+# next to the existing Prefill FX trace fails too ("module is not installed as
+# a submodule") -- in both cases leaving later traces in the process broken.
+# It is the same RLock the existing Prefill path holds
+# (predict_eager_runtime._RUNTIME_LOCK, also taken around the Prefill/forward
+# predictors in predict_runtime), so Prefill traces and Generate exports never
+# overlap. RLock: nested acquisition by the same thread cannot deadlock.
+try:
+    from predict_eager_runtime import _RUNTIME_LOCK as EXPORT_LOCK
+except ImportError:  # export_graph used on its own (tests): a private lock
+    EXPORT_LOCK = threading.RLock()
+
+
+def _serialized(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with EXPORT_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
+
 
 # graphs are always extracted with eager attention (matmul-softmax-matmul);
 # reported as result metadata attention_implementation
@@ -551,6 +577,7 @@ def _assert_meta_only(model: nn.Module) -> None:
         raise GenerateGraphError("device", "model parameters are not on the meta device")
 
 
+@_serialized
 def extract_prefill(snapshot, workload_type, batch, seq_len) -> ExtractedModel:
     config = build_config(snapshot)
     model = build_meta_model(config, workload_type)
@@ -613,6 +640,7 @@ def extract_prefill(snapshot, workload_type, batch, seq_len) -> ExtractedModel:
     )
 
 
+@_serialized
 def extract_decode(extracted: ExtractedModel, cache_len: int) -> PhaseGraph:
     seq2seq = extracted.workload_type == SEQ2SEQ_WORKLOAD
     batch, seq_len = extracted.batch, extracted.seq_len
