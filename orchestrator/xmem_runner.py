@@ -38,6 +38,8 @@ XMEM_KEYS = {
     "gpu_memory_gb",
     "model_config",
     "workload_type",
+    "threads",
+    "gpu_name",
 }
 
 # Not a user-configurable value: this is xMem's internal "candidate GPU memory"
@@ -80,7 +82,8 @@ def build_xmem_args(payload: dict[str, Any]) -> dict[str, Any]:
 def cache_key_for(xmem_args: dict[str, Any]) -> str:
     import hashlib
 
-    return hashlib.sha256(json.dumps(xmem_args, sort_keys=True).encode("utf-8")).hexdigest()
+    from cache_key import VRAM_PREDICTOR_VERSION, vram_code_fingerprint
+    return hashlib.sha256(json.dumps({"version":VRAM_PREDICTOR_VERSION,"source":vram_code_fingerprint(),"args":xmem_args}, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def parse_result(stdout: str) -> Optional[dict]:

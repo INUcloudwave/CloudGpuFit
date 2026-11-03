@@ -1,0 +1,28 @@
+{
+  "unit_tests": {
+    "passed": 19,
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "integration_tests": {
+    "passed": 15,
+    "configurations": [
+      "GPT2",
+      "T5",
+      "ViT",
+      "ResNet",
+      "MobileNetV2"
+    ],
+    "dtypes": [
+      "fp32",
+      "fp16",
+      "bf16"
+    ],
+    "torch": "2.6.0+cpu",
+    "transformers": "4.52.4",
+    "python": "3.12",
+    "scope": "tiny models and native cache shapes, not original 342 conditions"
+  },
+  "typescript": "web/lib/types.ts: npx --package typescript@5 tsc --noEmit --lib ES2020",
+  "inuos_preflight": "not yet run",
+  "original_342_predictions": "not yet run"
+}

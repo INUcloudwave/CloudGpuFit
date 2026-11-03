@@ -25,64 +25,37 @@ setup = module_at("setup_manager", "orchestrator/setup_manager.py")
 cache = module_at("cache_key", "orchestrator/cache_key.py")
 
 
-def predictor():
-    # Execute the real calculation path with the CPU profiler's observed output.
-    tree = ast.parse((ROOT / "predict_vram.py").read_text(encoding="utf-8"))
-    constants = {"DTYPE_SCALE", "DTYPE_BYTES", "UNDERESTIMATE_CONSTANT",
-                 "WORKLOAD_MODEL_CLASS"}
-    functions = {"run", "collect_warnings", "kv_cache_bytes"}
-    nodes = [n for n in tree.body
-             if isinstance(n, ast.FunctionDef) and n.name in functions
-             or isinstance(n, ast.Assign)
-             and any(isinstance(t, ast.Name) and t.id in constants for t in n.targets)]
-    cfg = types.SimpleNamespace(num_hidden_layers=12, num_attention_heads=12,
-                                hidden_size=768, vocab_size=50257)
-    env = {"time": time, "warnings": warnings, "os": os,
-           "torch": types.SimpleNamespace(manual_seed=lambda seed: None),
-           "load_model": lambda *args: (object(), "llm", cfg),
-           "param_bytes": lambda model: 510342192,
-           "build_loader": lambda *args, **kwargs: object(),
-           "profile_on_cpu": lambda *args, **kwargs: "observed-profile",
-           "estimate": lambda *args: {"memory": {"tensor": 564365312}}}
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), "predict_vram.py", "exec"), env)
-    return env["run"]
-
-
-def request(dtype="fp16", mode="generate"):
-    return argparse.Namespace(model="openai-community/gpt2", workload_type="decoder_llm",
-                              model_config=None, batch_size=1, seq_len=256,
-                              encoder_seq_len=256, decoder_seq_len=1, resolution=None,
-                              dtype=dtype, mode=mode, max_new_tokens=64, gpu_memory_gb=24)
-
-
 class PredictionRegressionTests(unittest.TestCase):
-    def evaluate(self, **kwargs):
-        with patch.dict(os.environ, {}, clear=False), warnings.catch_warnings():
-            return predictor()(request(**kwargs))
-
-    def test_observed_gpt2_profile_has_no_hidden_two_gib_addition(self):
-        value = self.evaluate()
-        self.assertEqual(value["status"], "ok")
+    def test_reserved_is_used_before_outside_not_allocated(self):
+        from vram_policy import memory_result
+        value = memory_result(1000, 4096, "fp16", "NVIDIA L4")
+        target = value["target_gpu_estimate"]
+        self.assertEqual(value["required_vram_bytes"], 4096 + target["outside_observed_upper_bytes"])
+        self.assertEqual(target["estimated_nvml_bytes"], 4096 + target["outside_estimate_bytes"])
         self.assertEqual(value["breakdown_bytes"]["fixed_margin"], 0)
-        self.assertEqual(value["required_vram_bytes"], 310756352)
-        self.assertEqual(value["required_vram_gb"], 0.29)
-        self.assertEqual(value["breakdown_bytes"]["after_underestimate_correction"], 298959872)
-        self.assertTrue(any("CUDA context" in w for w in value["warnings"]))
+        self.assertEqual(value["breakdown_bytes"]["empirical_tensor_correction"], 0)
 
-    def test_prefill_and_generate_still_differ_by_the_requested_kv(self):
-        prefill = self.evaluate(mode="prefill")
-        generate = self.evaluate(mode="generate")
-        self.assertEqual(prefill["required_vram_bytes"], 298959872)
-        self.assertIsNone(prefill["breakdown_bytes"]["kv_cache_estimate"])
-        self.assertEqual(generate["required_vram_bytes"] - prefill["required_vram_bytes"],
-                         11796480)
+    def test_dtype_does_not_rescale_native_trace(self):
+        from vram_policy import memory_result
+        for dtype in ["fp16", "fp32", "bf16"]:
+            value = memory_result(12345, 20000, dtype)
+            self.assertEqual(value["predicted_allocated_bytes"], 12345)
+            self.assertEqual(value["predicted_reserved_bytes"], 20000)
 
-    def test_precision_conversion_is_preserved(self):
-        fp32 = self.evaluate(dtype="fp32")
-        fp16 = self.evaluate(dtype="fp16")
-        bf16 = self.evaluate(dtype="bf16")
-        self.assertEqual(fp32["required_vram_bytes"], 2 * fp16["required_vram_bytes"])
-        self.assertEqual(bf16["required_vram_bytes"], fp16["required_vram_bytes"])
+    def test_unknown_gpu_is_not_assigned_zero_overhead(self):
+        from vram_policy import memory_result
+        with self.assertRaisesRegex(ValueError, "calibration"):
+            memory_result(1000, 4096, "fp16", "NVIDIA L40S")
+
+    def test_t4_bf16_is_not_a_supported_target(self):
+        from vram_policy import memory_result
+        value = memory_result(1000, 4096, "bf16")
+        self.assertEqual(value["gpu_requirements"]["NVIDIA T4"]["status"], "unsupported_dtype")
+
+    def test_invalid_trace_rejected(self):
+        from vram_policy import memory_result
+        for a,r in [(200,100),(-1,100),(float("nan"),100)]:
+            with self.assertRaises(ValueError):memory_result(a,r,"fp32")
 
 
 class DeploymentRegressionTests(unittest.TestCase):
@@ -93,6 +66,8 @@ class DeploymentRegressionTests(unittest.TestCase):
             repo.mkdir()
             (work / "xMem").mkdir(parents=True)
             (repo / "predict_vram.py").write_bytes(b"new-predictor")
+            for name in ["cpu_tensor_trace.py", "vram_policy.py", "gpu_overheads.json"]:
+                (repo / name).write_bytes(b"new-helper")
             target = work / "xMem" / "predict_vram.py"
             target.write_bytes(b"old-predictor")
             preserved = work / "xMem" / "keep-result.json"
@@ -115,6 +90,9 @@ class DeploymentRegressionTests(unittest.TestCase):
             repo.mkdir()
             (work / "xMem").mkdir(parents=True)
             (repo / "predict_vram.py").write_bytes(b"same-predictor")
+            for name in ["cpu_tensor_trace.py", "vram_policy.py", "gpu_overheads.json"]:
+                (repo / name).write_bytes(b"same-helper")
+                (work / "xMem" / name).write_bytes(b"same-helper")
             target = work / "xMem" / "predict_vram.py"
             target.write_bytes(b"same-predictor")
             with patch.object(setup, "CLOUDGPUFIT_DIR", repo), \

@@ -1,0 +1,38 @@
+{
+  "openai-community/gpt2": {
+    "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+    "safetensors": true
+  },
+  "openai-community/gpt2-medium": {
+    "revision": "6dcaa7a952f72f9298047fd5137cd6e4f05f41da",
+    "safetensors": true
+  },
+  "openai-community/gpt2-xl": {
+    "revision": "15ea56dee5df4983c59b2538573817e1667135e2",
+    "safetensors": true
+  },
+  "google/mobilenet_v2_1.0_224": {
+    "revision": "75e607b00aeae1297cc89d026a118bce012f5c5a",
+    "safetensors": true
+  },
+  "microsoft/resnet-50": {
+    "revision": "34c2154c194f829b11125337b98c8f5f9965ff19",
+    "safetensors": true
+  },
+  "google/vit-large-patch16-224": {
+    "revision": "9e2727f4250d3973839eecfa5c4b42e41b709a50",
+    "safetensors": false
+  },
+  "google-t5/t5-small": {
+    "revision": "df1b051c49625cf57a3d0d8d3863ed4d13564fe4",
+    "safetensors": true
+  },
+  "google-t5/t5-base": {
+    "revision": "a9723ea7f1b39c1eae772870f3b547bf6ef7e6c1",
+    "safetensors": true
+  },
+  "google-t5/t5-3b": {
+    "revision": "bed96aab9ee46012a5046386105ee5fd0ac572f0",
+    "safetensors": true
+  }
+}

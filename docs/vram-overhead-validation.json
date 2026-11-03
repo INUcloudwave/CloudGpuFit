@@ -1,0 +1,53 @@
+{
+  "calibration_id": "outside-bd902817a45c2b20",
+  "heldout_case_run_pairs": 1902,
+  "fit_policy": "Only FP16 baseline01 on one fit run per GPU; all other conditions and independent L4 instance-size runs are held out.",
+  "gpus": {
+    "NVIDIA A10G": {
+      "n": 333,
+      "mean_absolute_case_median_error_bytes": 2336466.642642643,
+      "max_absolute_case_median_error_bytes": 6291456,
+      "observed_min_sample_bytes": 316669952,
+      "observed_max_sample_bytes": 327155712,
+      "cases_outside_training_envelope": 119,
+      "validation_archive_names": [
+        "g5-2xlarge-all342-20261102.tar.gz"
+      ]
+    },
+    "NVIDIA GeForce RTX 3090": {
+      "n": 333,
+      "mean_absolute_case_median_error_bytes": 2317573.3813813813,
+      "max_absolute_case_median_error_bytes": 6291456,
+      "observed_min_sample_bytes": 320864256,
+      "observed_max_sample_bytes": 331350016,
+      "cases_outside_training_envelope": 116,
+      "validation_archive_names": [
+        "benchmark-review-20261006.tar.gz"
+      ]
+    },
+    "NVIDIA L4": {
+      "n": 1017,
+      "mean_absolute_case_median_error_bytes": 2288926.9616519175,
+      "max_absolute_case_median_error_bytes": 6291456,
+      "observed_min_sample_bytes": 236978176,
+      "observed_max_sample_bytes": 247463936,
+      "cases_outside_training_envelope": 348,
+      "validation_archive_names": [
+        "g6-2xlarge-all342-20261102.tar.gz",
+        "g6-4xlarge-all342-20261103.tar.gz",
+        "g6-xlarge-all342-20261102.tar.gz"
+      ]
+    },
+    "NVIDIA T4": {
+      "n": 219,
+      "mean_absolute_case_median_error_bytes": 2221640.4748858446,
+      "max_absolute_case_median_error_bytes": 4194304,
+      "observed_min_sample_bytes": 134217728,
+      "observed_max_sample_bytes": 138412032,
+      "cases_outside_training_envelope": 87,
+      "validation_archive_names": [
+        "g4dn-2xlarge-all342-20261102.tar.gz"
+      ]
+    }
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "calibration_id": "outside-bd902817a45c2b20",
+  "definition": "same-sample NVML process bytes minus PyTorch reserved bytes",
+  "fit_policy": "median of nine FP16 condition01 case medians; upper bound from training samples only",
+  "gpus": {
+    "NVIDIA T4": {
+      "outside_median_bytes": 138412032,
+      "outside_min_training_sample_bytes": 136314880,
+      "outside_max_training_sample_bytes": 138412032,
+      "supported_dtypes": [
+        "fp16",
+        "fp32"
+      ],
+      "runtime_scope": {
+        "torch": "2.6.0+cu124",
+        "transformers": "4.52.4",
+        "cuda_runtime": "12.4",
+        "driver": "595.112.07",
+        "image_id": "sha256:457da255e6e2de7ee05ff7814674c90abcf6d1ed04e73df3cc4eebcdb31fb032"
+      },
+      "training_case_ids": [
+        "core__decoder_llm__large__fp16__01",
+        "core__decoder_llm__medium__fp16__01",
+        "core__decoder_llm__small__fp16__01",
+        "core__text_encdec__large__fp16__01",
+        "core__text_encdec__medium__fp16__01",
+        "core__text_encdec__small__fp16__01",
+        "core__vision_cls__large__fp16__01",
+        "core__vision_cls__medium__fp16__01",
+        "core__vision_cls__small__fp16__01"
+      ],
+      "source_archives_sha256": {
+        "g4dn-2xlarge-all342-20261102.tar.gz": "9e79f8deba8ef32ec4f8b75b88f730abd873466c37f36177256f65d80013fa77"
+      }
+    },
+    "NVIDIA A10G": {
+      "outside_median_bytes": 322961408,
+      "outside_min_training_sample_bytes": 322961408,
+      "outside_max_training_sample_bytes": 325058560,
+      "supported_dtypes": [
+        "fp16",
+        "fp32",
+        "bf16"
+      ],
+      "runtime_scope": {
+        "torch": "2.6.0+cu124",
+        "transformers": "4.52.4",
+        "cuda_runtime": "12.4",
+        "driver": "595.112.07",
+        "image_id": "sha256:457da255e6e2de7ee05ff7814674c90abcf6d1ed04e73df3cc4eebcdb31fb032"
+      },
+      "training_case_ids": [
+        "core__decoder_llm__large__fp16__01",
+        "core__decoder_llm__medium__fp16__01",
+        "core__decoder_llm__small__fp16__01",
+        "core__text_encdec__large__fp16__01",
+        "core__text_encdec__medium__fp16__01",
+        "core__text_encdec__small__fp16__01",
+        "core__vision_cls__large__fp16__01",
+        "core__vision_cls__medium__fp16__01",
+        "core__vision_cls__small__fp16__01"
+      ],
+      "source_archives_sha256": {
+        "g5-2xlarge-all342-20261102.tar.gz": "22d3925449f3463523a7fc86a4f6f6facce75a330261c1d25b24e4b7e23ab1e7"
+      }
+    },
+    "NVIDIA L4": {
+      "outside_median_bytes": 243269632,
+      "outside_min_training_sample_bytes": 243269632,
+      "outside_max_training_sample_bytes": 245366784,
+      "supported_dtypes": [
+        "fp16",
+        "fp32",
+        "bf16"
+      ],
+      "runtime_scope": {
+        "torch": "2.6.0+cu124",
+        "transformers": "4.52.4",
+        "cuda_runtime": "12.4",
+        "driver": "595.112.07",
+        "image_id": "sha256:457da255e6e2de7ee05ff7814674c90abcf6d1ed04e73df3cc4eebcdb31fb032"
+      },
+      "training_case_ids": [
+        "core__decoder_llm__large__fp16__01",
+        "core__decoder_llm__medium__fp16__01",
+        "core__decoder_llm__small__fp16__01",
+        "core__text_encdec__large__fp16__01",
+        "core__text_encdec__medium__fp16__01",
+        "core__text_encdec__small__fp16__01",
+        "core__vision_cls__large__fp16__01",
+        "core__vision_cls__medium__fp16__01",
+        "core__vision_cls__small__fp16__01"
+      ],
+      "source_archives_sha256": {
+        "g6-2xlarge-all342-20261102.tar.gz": "c6f4b471ec4a683740d9db7fa0ffb8e0b7d03905f676e2552cfc9a48786a7536"
+      }
+    },
+    "NVIDIA GeForce RTX 3090": {
+      "outside_median_bytes": 327155712,
+      "outside_min_training_sample_bytes": 327155712,
+      "outside_max_training_sample_bytes": 329252864,
+      "supported_dtypes": [
+        "fp16",
+        "fp32",
+        "bf16"
+      ],
+      "runtime_scope": {
+        "torch": "2.6.0+cu124",
+        "transformers": "4.52.4",
+        "cuda_runtime": "12.4",
+        "driver": "570.211.01",
+        "image_id": "sha256:457da255e6e2de7ee05ff7814674c90abcf6d1ed04e73df3cc4eebcdb31fb032"
+      },
+      "training_case_ids": [
+        "core__decoder_llm__large__fp16__01",
+        "core__decoder_llm__medium__fp16__01",
+        "core__decoder_llm__small__fp16__01",
+        "core__text_encdec__large__fp16__01",
+        "core__text_encdec__medium__fp16__01",
+        "core__text_encdec__small__fp16__01",
+        "core__vision_cls__large__fp16__01",
+        "core__vision_cls__medium__fp16__01",
+        "core__vision_cls__small__fp16__01"
+      ],
+      "source_archives_sha256": {
+        "benchmark-review-20261006.tar.gz": "507dddef13d451e0a09419b3165498fc7a4e0218b26fdc79fde5a0c5e02822d4"
+      }
+    }
+  }
+}

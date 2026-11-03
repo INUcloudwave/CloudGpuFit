@@ -187,6 +187,7 @@ async def process_job(job_id: str) -> None:
         catalog_error = str(exc)
     candidates = filter_instances(
         required_vram_gb=vram_outcome.result["required_vram_gb"],
+        gpu_requirements=vram_outcome.result.get("gpu_requirements"),
         aws_region=aws_region,
         budget_usd_per_hour=deployment.get("budget_usd_per_hour"),
         instance_catalog=instance_catalog,

@@ -169,8 +169,13 @@ def _create_container() -> None:
 
 def _sync_predictor() -> None:
     """Atomically refresh the predictor in the bind-mounted xMem checkout."""
-    source = CLOUDGPUFIT_DIR / "predict_vram.py"
-    target = _xmem_dir() / "predict_vram.py"
+    for name in ("predict_vram.py", "cpu_tensor_trace.py", "vram_policy.py", "gpu_overheads.json"):
+        _sync_file(name)
+
+
+def _sync_file(name) -> None:
+    source = CLOUDGPUFIT_DIR / name
+    target = _xmem_dir() / name
     if not source.is_file():
         raise SetupError(f"예측 코드를 찾을 수 없습니다: {source}")
     content = source.read_bytes()
@@ -222,6 +227,12 @@ def _finish_xmem_setup() -> None:
 
 
 def _apply_patch_if_needed(xmem_dir: Path) -> None:
+    # The v3 predictor uses xMem's allocator directly and no longer needs
+    # training-loop patches. Existing patched checkouts are left untouched.
+    return
+
+
+def _apply_one_patch(xmem_dir: Path, name: str) -> None:
     """Applies core_inference.patch, distinguishing "clean apply" from
     "already applied" (harmless — happens on every retry after the first
     successful setup, since patch+copy always re-run alongside pip install)
@@ -229,7 +240,7 @@ def _apply_patch_if_needed(xmem_dir: Path) -> None:
     pre- or post-patch state, e.g. XMEM_COMMIT changed upstream) — the old
     code treated the latter two identically as "not fatal", silently leaving
     a conflicted checkout in place instead of surfacing it."""
-    patch_path = CLOUDGPUFIT_DIR / "xMem" / "patches" / "core_inference.patch"
+    patch_path = CLOUDGPUFIT_DIR / "xMem" / "patches" / name
 
     forward_check = _run(["git", "apply", "--check", str(patch_path)], cwd=xmem_dir)
     if forward_check.returncode == 0:

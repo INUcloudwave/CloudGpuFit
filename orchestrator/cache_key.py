@@ -24,7 +24,13 @@ from typing import Any
 # Bump by hand whenever predict_vram.py's output shape/semantics change in a
 # way that should invalidate previously cached jobs.
 # "2": remove the fixed 2 GiB margin; invalidate old result semantics.
-VRAM_PREDICTOR_VERSION = "2"
+VRAM_PREDICTOR_VERSION = "3-native-inference-outside-bd902817a45c2b20"
+
+
+def vram_code_fingerprint():
+    root=Path(__file__).resolve().parents[1]
+    return {name:hashlib.sha256((root/name).read_bytes()).hexdigest()
+            for name in ["predict_vram.py","cpu_tensor_trace.py","vram_policy.py","gpu_overheads.json"]}
 
 # Bump by hand whenever runtime_adapter.py / instance_filter.py's own logic
 # changes in a way that should invalidate previously cached jobs. This is
@@ -119,6 +125,7 @@ def pipeline_cache_key_for(
 ) -> str:
     material = {
         "vram_predictor_version": VRAM_PREDICTOR_VERSION,
+        "vram_code": vram_code_fingerprint(),
         "runtime_pipeline_version": RUNTIME_PIPELINE_VERSION,
         "eager_runtime_manifests": eager_runtime_manifest_fingerprint(eager_runtime_root),
         "generate_code": generate_code_fingerprint(eager_runtime_root),

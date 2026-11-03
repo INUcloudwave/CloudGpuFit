@@ -12,24 +12,16 @@ predict_vram.py — CPU-only GPU VRAM 예측 래퍼
 출력: stdout 마지막 줄에 결과 JSON 1개.
 """
 import argparse
-import copy
 import json
-import os
 import sys
 import time
-import uuid
 import warnings
+
+from vram_policy import memory_result, VERSION
 
 import torch
 
-# ───────────────────────────────────────── 실측 기반 상수
-# dtype 스케일: FP32 프로파일 → 목표 dtype 환산.
-# 6개 모델 실측 비율 0.5015~0.5552 의 보수적 상한.
-DTYPE_SCALE = {"fp32": 1.0, "fp16": 0.5, "bf16": 0.5}
 DTYPE_BYTES = {"fp32": 4, "fp16": 2, "bf16": 2}
-
-# tensor 예측 과소추정 보정. LLM 12조건 관측 최대 -2.37%.
-UNDERESTIMATE_CONSTANT = 32 * 1024 ** 2
 
 PROFILE_ITERATIONS = 2      # xMem train_on_cpu 기본값과 동일
 SAMPLES_PER_LOADER = 4      # iterations=2 → 최소 3배치 필요
@@ -83,23 +75,24 @@ class _VisionDataset(torch.utils.data.Dataset):
     위치 인자 하나로 부르는 형태. HF 이미지 분류 모델도 forward의 첫 인자가
     pixel_values라 같은 호출이 그대로 맞는다."""
 
-    def __init__(self, n, res, channels=3):
+    def __init__(self, n, res, channels=3, dtype=torch.float32):
         self.n, self.res, self.channels = n, res, channels
+        self.dtype = dtype
 
     def __len__(self):
         return self.n
 
     def __getitem__(self, idx):
         g = torch.Generator().manual_seed(idx)
-        x = torch.randn(self.channels, self.res, self.res, generator=g)
+        x = torch.randn(self.channels, self.res, self.res, generator=g).to(self.dtype)
         return x, torch.tensor(0)
 
 
 def build_loader(kind, batch_size, *, seq_len=None, resolution=None, vocab_size=None,
-                 channels=3):
+                 channels=3, dtype=torch.float32):
     n = batch_size * SAMPLES_PER_LOADER
     ds = (_LLMDataset(n, seq_len, vocab_size) if kind == "llm"
-          else _VisionDataset(n, resolution, channels))
+          else _VisionDataset(n, resolution, channels, dtype))
     return torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
 
 
@@ -123,7 +116,7 @@ WORKLOAD_MODEL_CLASS = {
 }
 
 
-def load_model(model_name, model_config=None, workload_type=None):
+def load_model(model_name, model_config=None, workload_type=None, dtype="fp32"):
     """(model, kind, hf_config) 반환. kind는 'llm' 또는 'vision'.
 
     model_config(호출측이 이미 HF에서 받아둔 config.json 원본 dict)가 있으면
@@ -141,7 +134,7 @@ def load_model(model_name, model_config=None, workload_type=None):
         # 이름만 보고 torchvision 별칭으로 바꿔치기하는 건 CLI 단독 사용일 때뿐.
         # 호출측이 workload_type을 지정했다면 그건 HF 모델을 뜻하므로 건드리지
         # 않는다 (HF ID에는 "/"가 들어가 별칭과 겹치지도 않는다).
-        return getattr_all_models(model_name).value, "vision", None
+        raise ValueError("Use an explicit Hugging Face model ID and workload_type; torchvision aliases are not reproducible")
 
     if model_config is not None:
         from transformers.models.auto.configuration_auto import CONFIG_MAPPING
@@ -153,7 +146,9 @@ def load_model(model_name, model_config=None, workload_type=None):
     else:
         cfg = transformers.AutoConfig.from_pretrained(model_name)
 
-    cfg.torch_dtype = torch.float32
+    target_dtype = getattr(torch, {"fp32":"float32", "fp16":"float16", "bf16":"bfloat16"}[dtype])
+    cfg.torch_dtype = target_dtype
+    cfg._attn_implementation = "eager"
 
     if workload_type is not None:
         if workload_type not in WORKLOAD_MODEL_CLASS:
@@ -169,8 +164,8 @@ def load_model(model_name, model_config=None, workload_type=None):
         model_class = suggest_automodel_class(model_name)
         kind = "llm"
 
-    model = model_class.from_config(cfg)
-    model.train()          # xMem ModelPreparer와 동일 (추론 루프가 eval로 전환)
+    model = model_class.from_config(cfg, torch_dtype=target_dtype, attn_implementation="eager")
+    model.eval()
     return model, kind, cfg
 
 
@@ -181,95 +176,46 @@ def getattr_all_models(model_name):
 
 
 def param_bytes(model):
-    return (sum(p.numel() * p.element_size() for p in model.parameters())
-            + sum(b.numel() * b.element_size() for b in model.buffers()))
+    return sum(storage_sizes(list(model.parameters()) + list(model.buffers())))
 
 
-# ───────────────────────────────────────── CPU 프로파일링
-def profile_on_cpu(model, loader, is_transformer):
-    from exp.trainer import ProfilerPlugin
-    from exp.trainer.trainer import ModelTrainer
-    from perf_estimator.config import Config
-    from utils import search_profiler_file
-
-    conf = Config(save2tmp=False)
-    conf.task_id = f"CPU_{uuid.uuid4().hex[:3]}"
-
-    trainer = ModelTrainer(
-        model=copy.deepcopy(model),
-        data_loader=loader,
-        on_cpu=True,
-        gpu_id=0,
-        iterations=PROFILE_ITERATIONS,
-        optimiser=torch.optim.SGD,      # 추론 경로에서는 미사용
-        config=conf,
-        plugins=[ProfilerPlugin(config=conf)],
-        zero_grad_mode=conf.trainer.zero_out,
-    )
-    trainer.train(is_transformer=is_transformer)
-
-    files = search_profiler_file(conf.result_dir)
-    if not files:
-        raise RuntimeError(f"프로파일 파일을 찾지 못했습니다: {conf.result_dir}")
-    return files[-1]
-
-
-# ───────────────────────────────────────── xMem 추정
-def estimate(profiler_file, batch_size, kind, model_name, gpu_memory_gb):
-    from perf_estimator.config import Config
-    from perf_estimator.log import init_logging
-    from perf_estimator.xmem import XMem
-
-    conf = Config(save2tmp=False)
-    if kind == "llm":
-        conf.trainer.huggingface_enable = True
-        conf.trainer.huggingface_model_name = model_name
-    else:
-        conf.trainer.huggingface_enable = False
-        conf.trainer.huggingface_model_name = None
-
-    init_logging(level="ERROR", conf=conf)
-    xmem = XMem(batch_size=batch_size,
-                max_gpu_memory_in_gb=gpu_memory_gb,
-                config=conf)
-    return xmem.estimate(profiler_file=profiler_file)
-
-
-# ───────────────────────────────────────── KV cache (실험적)
-def kv_cache_bytes(cfg, batch_size, total_len, dtype):
-    """generate 모드용 해석적 추정. 미검증."""
-    try:
-        layers = getattr(cfg, "num_hidden_layers", None) or cfg.n_layer
-        heads = getattr(cfg, "num_attention_heads", None) or cfg.n_head
-        hidden = getattr(cfg, "hidden_size", None) or cfg.n_embd
-        kv_heads = getattr(cfg, "num_key_value_heads", None) or heads
-        head_dim = getattr(cfg, "head_dim", None) or (hidden // heads)
-    except Exception:
-        return None
-    return 2 * layers * kv_heads * head_dim * total_len * batch_size * DTYPE_BYTES[dtype]
+def storage_sizes(tensors):
+    unique = {}
+    for tensor in tensors:
+        storage = tensor.untyped_storage()
+        unique[(storage.data_ptr(), storage.nbytes())] = storage.nbytes()
+    return list(unique.values())
 
 
 # ───────────────────────────────────────── 경고
 def collect_warnings(kind, mode):
-    w = ["VRAM estimate excludes unused allocator cache, CUDA context, "
-         "and other non-tensor GPU memory; no fixed safety margin is added"]
-    if mode == "generate":
-        w.append("mode=generate is EXPERIMENTAL: the KV cache is estimated "
-                 "analytically rather than traced, and tends to overestimate")
-    return w
+    return ["CPU-traced tensors and xMem allocator simulation do not capture every GPU-specific kernel workspace",
+            "GPU process overhead is empirically calibrated for the recorded software/driver scope; it is not a universal hardware constant",
+            "Native CPU dtype is used without precision fallback; unsupported CPU operations fail explicitly"]
 
 
 # ───────────────────────────────────────── 메인
 def run(args):
     t0 = time.time()
     warnings.filterwarnings("ignore")
-    torch.manual_seed(0)
+    torch.manual_seed(20261006)
+    torch.set_num_threads(getattr(args, "threads", 4))
+    if args.dtype not in DTYPE_BYTES:
+        raise ValueError("Unsupported dtype")
+    if args.mode not in ("prefill", "generate"):
+        raise ValueError("Unsupported inference mode")
+    for name in ("batch_size", "seq_len", "encoder_seq_len", "decoder_seq_len"):
+        if getattr(args, name) <= 0:
+            raise ValueError(f"{name} must be positive")
+    if args.mode == "generate" and args.max_new_tokens <= 0:
+        raise ValueError("max_new_tokens must be positive")
 
     workload_type = getattr(args, "workload_type", None)
     model, kind, hf_cfg = load_model(
         args.model,
         getattr(args, "model_config", None),
         workload_type,
+        args.dtype,
     )
     pb = param_bytes(model)
 
@@ -300,7 +246,7 @@ def run(args):
         if resolution is None:
             resolution = declared_res or 224
         loader = build_loader("vision", args.batch_size, resolution=resolution,
-                              channels=channels or 3)
+                              channels=channels or 3, dtype=next(model.parameters()).dtype)
 
     warns = collect_warnings(kind, args.mode)
     if kind == "vision" and hf_cfg is not None:
@@ -312,45 +258,14 @@ def run(args):
                 "(ViT/DeiT/Swin/...) will fail outright at a different size"
             )
 
-    os.environ["XMEM_INFER"] = "1"
-    os.environ["XMEM_PARAM_BYTES"] = str(pb)      # CNN 경로에서만 사용됨
+    example_batch = next(iter(loader))
+    inputs = example_batch if isinstance(example_batch, dict) else {"pixel_values":example_batch[0]}
+    actual_input_shapes = {key:list(value.shape) for key,value in inputs.items()}
+    from cpu_tensor_trace import trace_and_estimate
+    raw = trace_and_estimate(model, inputs, args.mode, args.max_new_tokens, storage_sizes, args.gpu_memory_gb)
 
-    # kind=="llm"이면 estimate()가 TrainerEstimator를 쓰는데, 그건 xMem 자체
-    # 코드에서 model_memory()를 계산하려고 AutoConfig.from_pretrained()와
-    # suggest_automodel_class()(pipeline_tag 조회)를 *또* 부른다 — 우리가 이미
-    # load_model()에서 받아둔 것과 같은 정보를 다시 HF에서 가져오는 것. 이걸
-    # 건너뛰게 하려고 core_inference.patch에 이 두 env var를 읽는 hunk를 추가
-    # 해뒀다. 원본 model_config가 없거나(레거시 CLI) workload_type을 안 줬으면
-    # 그냥 비워둬서 xMem 원래 동작(직접 fetch)으로 자연히 떨어진다.
-    raw_model_config = getattr(args, "model_config", None)
-    if kind == "llm" and raw_model_config is not None:
-        os.environ["XMEM_MODEL_CONFIG_JSON"] = json.dumps(raw_model_config)
-    else:
-        os.environ.pop("XMEM_MODEL_CONFIG_JSON", None)
-    if kind == "llm" and workload_type is not None:
-        os.environ["XMEM_MODEL_CLASS"] = WORKLOAD_MODEL_CLASS[workload_type][0]
-    else:
-        os.environ.pop("XMEM_MODEL_CLASS", None)
-
-    trace = profile_on_cpu(model, loader, is_transformer=(kind == "llm"))
-    raw = estimate(trace, args.batch_size, kind, args.model, args.gpu_memory_gb)
-
-    allocated_fp32 = raw["memory"]["tensor"]
-    scaled = allocated_fp32 * DTYPE_SCALE[args.dtype]
-    corrected = scaled + UNDERESTIMATE_CONSTANT * DTYPE_SCALE[args.dtype]
-
-    kv = None
-    if args.mode == "generate" and kind == "llm" and hf_cfg is not None:
-        # text_encdec generates past decoder_seq_len, not seq_len (that arg
-        # isn't even meaningful for this workload_type).
-        base_len = args.decoder_seq_len if workload_type == "text_encdec" else args.seq_len
-        kv = kv_cache_bytes(hf_cfg, args.batch_size,
-                            base_len + args.max_new_tokens, args.dtype)
-        if kv is None:
-            warns.append("KV cache could not be computed from the model config; "
-                         "the result covers prefill only")
-
-    required = corrected + (kv or 0)
+    accounting = memory_result(raw["memory"]["tensor"], raw["memory"]["segment"],
+                               args.dtype, getattr(args,"gpu_name",None))
 
     return {
         "status": "ok",
@@ -363,17 +278,14 @@ def run(args):
             "dtype": args.dtype, "mode": args.mode,
             "max_new_tokens": args.max_new_tokens if args.mode == "generate" else None,
         },
-        "breakdown_bytes": {
-            "param_bytes_fp32": pb,
-            "predicted_allocated_fp32": allocated_fp32,
-            "predicted_allocated_scaled": int(scaled),
-            "after_underestimate_correction": int(corrected),
-            "kv_cache_estimate": kv,
-            # Preserve the existing breakdown schema; no margin is added.
-            "fixed_margin": 0,
-        },
-        "required_vram_bytes": int(required),
-        "required_vram_gb": round(required / 1024 ** 3, 2),
+        **accounting,
+        "model_storage_bytes": pb,
+        "trace_summary": raw["trace_summary"],
+        "actual_input_shapes": actual_input_shapes,
+        "inference_path": "full_generate_with_cache" if args.mode=="generate" and kind=="llm" else "forward",
+        "dtype_policy": "native_cpu_no_rescale",
+        "environment": {"torch":torch.__version__,"transformers":__import__("transformers").__version__,
+                        "cpu_threads":torch.get_num_threads(),"attention":"eager","seed":20261006},
         "elapsed_seconds": round(time.time() - t0, 1),
         "warnings": warns,
     }
@@ -392,7 +304,9 @@ def main():
     # 그것도 없으면 run()이 224로 떨어뜨린다.
     p.add_argument("--resolution", type=int, default=None)
     p.add_argument("--workload_type", choices=sorted(WORKLOAD_MODEL_CLASS), default=None)
-    p.add_argument("--dtype", choices=list(DTYPE_SCALE), default="fp16")
+    p.add_argument("--dtype", choices=list(DTYPE_BYTES), default="fp16")
+    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--gpu_name", default=None)
     p.add_argument("--mode", choices=["prefill", "generate"], default="prefill")
     p.add_argument("--max_new_tokens", type=int, default=256)
     p.add_argument("--gpu_memory_gb", type=float, default=80)

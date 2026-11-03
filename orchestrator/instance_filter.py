@@ -204,6 +204,7 @@ def filter_instances(
     *,
     engine_mode: str = "eager",
     supported: Mapping[str, Mapping[str, Any]] | None = None,
+    gpu_requirements: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Candidates passing every condition:
 
@@ -227,7 +228,17 @@ def filter_instances(
 
     candidates: list[dict[str, Any]] = []
     for instance_type, spec in specs.items():
-        if spec["gpu_vram_gb"] < required_vram_gb:
+        memory_requirement = None
+        requirement_gb = required_vram_gb
+        if gpu_requirements is not None:
+            gpu_name = "NVIDIA T4" if spec["gpu_name"] == "Tesla T4" else spec["gpu_name"]
+            memory_requirement = gpu_requirements.get(gpu_name)
+            # An uncalibrated GPU must not silently get zero overhead. In
+            # particular, T4 BF16 is not a valid candidate despite its tensor size.
+            if not memory_requirement or memory_requirement.get("status") != "ok":
+                continue
+            requirement_gb = memory_requirement["required_vram_bytes"] / 1024**3
+        if spec["gpu_vram_gb"] < requirement_gb:
             continue
         entry = catalog_by_type.get(instance_type)
         if entry is None:
@@ -244,6 +255,7 @@ def filter_instances(
                 "vcpu": spec["vcpu"],
                 "price_usd_per_hour": price,
                 "aws_region": aws_region,
+                "memory_requirement": memory_requirement,
                 "profile_provenance": (
                     "proxy" if spec.get("latency_proxy_of") else target_provenance(instance_type)["status"]
                 ),

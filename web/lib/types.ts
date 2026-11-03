@@ -81,15 +81,29 @@ export interface PredictPayload {
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
 export interface XMemBreakdownBytes {
-  param_bytes_fp32: number;
-  predicted_allocated_fp32: number;
-  predicted_allocated_scaled: number;
-  after_underestimate_correction: number;
-  kv_cache_estimate: number | null;
+  predicted_allocated_native_dtype: number;
+  predicted_reserved_native_dtype: number;
+  empirical_tensor_correction: number;
+  outside_gpu_estimate: number | null;
   fixed_margin: number;
 }
 
+export interface GpuMemoryRequirement {
+  status: "ok" | "unsupported_dtype" | "uncalibrated_gpu";
+  gpu: string;
+  estimated_nvml_bytes?: number;
+  required_vram_bytes?: number;
+  outside_estimate_bytes?: number;
+  outside_observed_upper_bytes?: number;
+  calibration_id?: string;
+}
+
 export interface XMemResult {
+  prediction_version: string;
+  predicted_allocated_bytes: number;
+  predicted_reserved_bytes: number;
+  required_vram_scope: "target_process" | "maximum_among_calibrated_gpus";
+  gpu_requirements: Record<string, GpuMemoryRequirement>;
   required_vram_gb: number;
   required_vram_bytes: number;
   breakdown_bytes: XMemBreakdownBytes;

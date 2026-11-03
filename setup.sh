@@ -47,17 +47,13 @@ else
   echo "  이미 존재함, 건너뜀"
 fi
 
-echo "[5/7] 코어 패치 적용"
-cd "${WORK_DIR}/xMem"
-if git apply --check "${REPO_DIR}/xMem/patches/core_inference.patch" 2>/dev/null; then
-  git apply "${REPO_DIR}/xMem/patches/core_inference.patch"
-  echo "  적용 완료"
-else
-  echo "  이미 적용되어 있거나 충돌 발생 — 수동 확인 필요"
-fi
-
-echo "[6/7] predict_vram.py 복사"
-cp "${REPO_DIR}/predict_vram.py" "${WORK_DIR}/xMem/predict_vram.py"
+echo "[5/7] 코어 패치와 native inference 패치 적용"
+cd "${REPO_DIR}"
+python3 - <<'PYSETUP'
+from orchestrator.setup_manager import _apply_patch_if_needed, _sync_predictor, _xmem_dir
+_apply_patch_if_needed(_xmem_dir())
+_sync_predictor()
+PYSETUP
 
 echo "[7/7] 추가 패키지 설치"
 docker exec -t "${CONTAINER_NAME}" bash -c "
