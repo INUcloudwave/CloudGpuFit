@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+import uuid
 
 
 REGION = "cloudgpufit_inference"
@@ -105,7 +106,7 @@ def trace_and_estimate(model, inputs, mode, new_tokens, storage_sizes, gpu_memor
     for index,size in enumerate(weights+initial_inputs):
         if size:blocks.append(resident(size,-index-1))
     blocks.sort(key=lambda b:b.alloc_time)
-    result=AllocatorSim(max_allocated_memory_gb=gpu_memory_gb,config=Config(save2tmp=True)).simulate(blocks)
+    result=AllocatorSim(max_allocated_memory_gb=gpu_memory_gb,config=Config(save2tmp=True,run_id=uuid.uuid4().hex)).simulate(blocks)
     if result.oom:raise RuntimeError('xMem simulation reached its configured memory ceiling')
     allocated=max(result._trace.max_usage_changes)
     reserved=max(result._trace.max_segment_changes)

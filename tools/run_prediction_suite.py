@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pinned CPU-only native xMem predictions for the GPU benchmark case IDs."""
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import argparse
 import csv
 import fcntl
@@ -50,6 +51,31 @@ def select_cases(plan, case_set):
     return cases
 
 
+def ram_reservation_gb(case):
+    """Scheduling estimate only; never a VRAM correction or a RAM guarantee."""
+    if case['size']=='large':
+        return {'text_encdec':28, 'decoder_llm':20, 'vision_cls':16}[case['workload_type']]
+    return 10 if case['size']=='medium' else 6
+
+
+def bounded_results(cases, worker, jobs, ram_budget):
+    pending=list(cases); active={}; used=0
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        while pending or active:
+            while len(active)<jobs:
+                index=next((i for i,c in enumerate(pending)
+                            if used+ram_reservation_gb(c)<=ram_budget),None)
+                if index is None:break
+                case=pending.pop(index);cost=ram_reservation_gb(case)
+                active[pool.submit(worker,case)]=cost;used+=cost
+            if not active:
+                raise ValueError('RAM budget is too small for a pending case')
+            done,_=wait(active,return_when=FIRST_COMPLETED)
+            for future in done:
+                used-=active.pop(future)
+                yield future.result()
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output-root',required=True,type=Path)
@@ -57,10 +83,12 @@ def main():
     p.add_argument('--revisions',type=Path,default=ROOT/'benchmarks/aws342/revisions.json')
     p.add_argument('--case-set',choices=['baseline9','all'],default='baseline9')
     p.add_argument('--threads',type=int,default=4)
+    p.add_argument('--jobs',type=int,default=1)
+    p.add_argument('--ram-budget-gb',type=int,default=36,help='Approximate concurrent RAM reservations; not a hard memory limit')
     p.add_argument('--prepare',action='store_true',help='Update existing CPU container with validated patches; keep image and dependencies')
     p.add_argument('--preflight-only',action='store_true')
     a=p.parse_args()
-    if a.threads<1:p.error('threads must be positive')
+    if a.threads<1 or a.jobs<1:p.error('threads and jobs must be positive')
     out=a.output_root.resolve();out.mkdir(parents=True,exist_ok=True)
     lock=(out/'prediction.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -75,6 +103,11 @@ def main():
         return subprocess.run(argv,text=True,encoding='utf-8',errors='replace',check=True,**kwargs)
     state=run(['docker','inspect','-f','{{.State.Running}}',CONTAINER],capture_output=True)
     if state.stdout.strip()!='true':raise SystemExit('Start the existing xmem-cpu container first')
+    container_lock=(ROOT/'.cpu-prediction.lock').open('a')
+    fcntl.flock(container_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    running=run(['docker','top',CONTAINER,'-eo','pid,args'],capture_output=True).stdout
+    if 'predict_vram.py' in running:raise SystemExit('Another CPU prediction is running; stop it before preparing code')
+    if a.ram_budget_gb<max(map(ram_reservation_gb,cases)):raise SystemExit('RAM budget must accommodate the largest case (28 GB for all342)')
     if a.prepare:
         sys.path.insert(0,str(ROOT/'orchestrator'))
         from setup_manager import _apply_patch_if_needed,_sync_predictor,_xmem_dir
@@ -99,16 +132,19 @@ def main():
     print('Cases:',len(cases),'Results:',out,flush=True)
     if a.preflight_only:return 0
     git_commit=run(['git','-C',str(ROOT),'rev-parse','HEAD'],capture_output=True).stdout.strip()
-    manifest={'identity':identity,'status':'running','case_set':a.case_set,'total_cases':len(cases),'environment':environment,'image_id':image_id,'allocator_lock':allocator_lock,'git_commit':git_commit}
+    manifest={'identity':identity,'status':'running','case_set':a.case_set,'total_cases':len(cases),'jobs':a.jobs,'ram_budget_gb':a.ram_budget_gb,'environment':environment,'image_id':image_id,'allocator_lock':allocator_lock,'git_commit':git_commit}
     with (out/'invocations.jsonl').open('a') as file:
         file.write(json.dumps({'case_set':a.case_set,'started_unix':time.time(),'git_commit':git_commit})+'\n')
     save(manifest_path,manifest);rows=[];start=time.monotonic();configs={}
-    for number,case in enumerate(cases,1):
+    for model in dict.fromkeys(c['model'] for c in cases):
+        configs[model]=json.loads(run(['docker','exec',CONTAINER,'python','-c',CONFIG,model,pins[model]['revision']],capture_output=True).stdout)
+    print(f'Parallel jobs: {a.jobs}, threads/job: {a.threads}, approximate RAM budget: {a.ram_budget_gb} GB',flush=True)
+    def execute(case):
         cid=case['case_id'];target=out/(cid+'.prediction.json');inputfile=out/(cid+'.input.json')
         if target.exists() and json.loads(target.read_text()).get('status')=='ok':
-            result=json.loads(target.read_text());print(f'[{number}/{len(cases)}] REUSE {cid}',flush=True)
+            result=json.loads(target.read_text());print(f'REUSE {cid}',flush=True)
         else:
-            print(f'[{number}/{len(cases)}] START {cid}',flush=True)
+            print(f'START {cid}',flush=True)
             try:
                 model=case['model'];revision=pins[model]['revision']
                 if model not in configs:
@@ -116,18 +152,20 @@ def main():
                 payload=request(case,configs[model],a.threads);save(inputfile,{'case_id':cid,'revision':revision,'request':payload})
                 log=out/(cid+'.log')
                 with log.open('w') as output:
-                    proc=subprocess.run(['docker','exec','-i','-w','/work/xMem',CONTAINER,'python','-u','predict_vram.py','--json','-'],input=json.dumps(payload),text=True,stdout=output,stderr=subprocess.STDOUT)
+                    proc=subprocess.run(['docker','exec','-i','-e',f'OMP_NUM_THREADS={a.threads}','-e',f'MKL_NUM_THREADS={a.threads}','-e','OPENBLAS_NUM_THREADS=1','-w','/work/xMem',CONTAINER,'python','-u','predict_vram.py','--json','-'],input=json.dumps(payload),text=True,stdout=output,stderr=subprocess.STDOUT)
                 result=prediction_json(log.read_text())
                 if proc.returncode or result['status']!='ok':raise RuntimeError(result.get('error','Predictor exited unsuccessfully'))
                 result.update(case_id=cid,revision=revision)
                 save(target,result)
             except Exception as exc:
                 result={'status':'error','case_id':cid,'error':str(exc)};save(target,result)
+        return cid,result
+    for cid,result in bounded_results(cases,execute,a.jobs,a.ram_budget_gb):
         rows.append({'case_id':cid,'status':result['status'],'predicted_allocated_bytes':result.get('predicted_allocated_bytes'),
                      'predicted_reserved_bytes':result.get('predicted_reserved_bytes'),'error':result.get('error')})
         manifest.update(completed_cases=len(rows),success_count=sum(x['status']=='ok' for x in rows),elapsed_seconds=time.monotonic()-start)
         save(manifest_path,manifest)
-        print(f'[{number}/{len(cases)}] {result["status"]} {cid}',flush=True)
+        print(f'[{len(rows)}/{len(cases)}] {result["status"]} {cid}',flush=True)
     manifest['status']='complete' if all(x['status']=='ok' for x in rows) else 'complete_with_errors'
     save(manifest_path,manifest)
     with (out/'summary.csv').open('w',newline='') as file:

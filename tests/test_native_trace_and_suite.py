@@ -61,6 +61,26 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(len(cases),9)
         self.assertTrue(all(c['dtype']=='fp16' and c['case_id'].endswith('__01') for c in cases))
 
+    def test_parallel_scheduler_limits_and_exactly_once(self):
+        import threading
+        import time
+        lock=threading.Lock(); active=0; peak=0; used=0
+        cases=self.runner.select_cases(self.plan,'baseline9')
+        def worker(case):
+            nonlocal active,peak,used
+            cost=self.runner.ram_reservation_gb(case)
+            with lock:
+                active+=1;used+=cost;peak=max(peak,active)
+                self.assertLessEqual(active,6)
+                self.assertLessEqual(used,36)
+            time.sleep(0.01)
+            with lock:active-=1;used-=cost
+            return case['case_id']
+        results=list(self.runner.bounded_results(cases,worker,6,36))
+        self.assertEqual(set(results),{c['case_id'] for c in cases})
+        self.assertEqual(len(results),9)
+        self.assertGreater(peak,1)
+
     def test_heldout_cannot_change_fitted_constant(self):
         calibration=load('calibration','tools/calibrate_gpu_overheads.py')
         def row(number,value,dtype='fp16'):
