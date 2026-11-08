@@ -169,7 +169,7 @@ def _create_container() -> None:
 
 def _sync_predictor() -> None:
     """Atomically refresh the predictor in the bind-mounted xMem checkout."""
-    for name in ("predict_vram.py", "cpu_tensor_trace.py", "vram_policy.py", "gpu_overheads.json"):
+    for name in ("predict_vram.py", "cpu_tensor_trace.py", "inference_trace_runtime.py", "vram_policy.py", "gpu_overheads.json"):
         _sync_file(name)
 
 

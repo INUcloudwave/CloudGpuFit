@@ -24,13 +24,13 @@ from typing import Any
 # Bump by hand whenever predict_vram.py's output shape/semantics change in a
 # way that should invalidate previously cached jobs.
 # "2": remove the fixed 2 GiB margin; invalidate old result semantics.
-VRAM_PREDICTOR_VERSION = "3-native-inference-outside-bd902817a45c2b20"
+VRAM_PREDICTOR_VERSION = "4-native-inference-single-request-outside-bd902817a45c2b20"
 
 
 def vram_code_fingerprint():
     root=Path(__file__).resolve().parents[1]
     return {name:hashlib.sha256((root/name).read_bytes()).hexdigest()
-            for name in ["predict_vram.py","cpu_tensor_trace.py","vram_policy.py","gpu_overheads.json"]}
+            for name in ["predict_vram.py","cpu_tensor_trace.py","inference_trace_runtime.py","vram_policy.py","gpu_overheads.json"]}
 
 # Bump by hand whenever runtime_adapter.py / instance_filter.py's own logic
 # changes in a way that should invalidate previously cached jobs. This is

@@ -87,13 +87,17 @@ def main():
     p.add_argument('--ram-budget-gb',type=int,default=36,help='Approximate concurrent RAM reservations; not a hard memory limit')
     p.add_argument('--prepare',action='store_true',help='Update existing CPU container with validated patches; keep image and dependencies')
     p.add_argument('--preflight-only',action='store_true')
+    p.add_argument('--allow-unbounded-legacy-run',action='store_true',
+                   help='Explicitly opt into the old shared-container runner without a hard RAM limit')
     a=p.parse_args()
+    if not a.preflight_only and not a.allow_unbounded_legacy_run:
+        p.error('The legacy runner caused host OOMs. Use tools/run_prediction_recovery.py with a new output directory.')
     if a.threads<1 or a.jobs<1:p.error('threads and jobs must be positive')
     out=a.output_root.resolve();out.mkdir(parents=True,exist_ok=True)
     lock=(out/'prediction.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     plan=json.loads(a.plan.read_text());pins=json.loads(a.revisions.read_text());cases=select_cases(plan,a.case_set)
-    sources=['predict_vram.py','cpu_tensor_trace.py','vram_policy.py','gpu_overheads.json']
+    sources=['predict_vram.py','cpu_tensor_trace.py','inference_trace_runtime.py','vram_policy.py','gpu_overheads.json']
     identity={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in sources}
     identity.update(plan=hashlib.sha256(a.plan.read_bytes()).hexdigest(),revisions=hashlib.sha256(a.revisions.read_bytes()).hexdigest(),threads=a.threads)
     manifest_path=out/'manifest.json'

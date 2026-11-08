@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-VERSION = "3-native-inference"
+VERSION = "4-native-inference-single-request"
 PROFILE_PATH = Path(__file__).with_name("gpu_overheads.json")
 ALIASES = {"Tesla T4": "NVIDIA T4", "T4": "NVIDIA T4", "A10G": "NVIDIA A10G",
            "L4": "NVIDIA L4", "L40S": "NVIDIA L40S"}

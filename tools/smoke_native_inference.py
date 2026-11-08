@@ -37,7 +37,9 @@ def main():
             if run.returncode or result['status']!='ok':
                 raise RuntimeError(kind+'/'+dtype+' failed: '+run.stdout+'\n'+run.stderr)
             trace=result['trace_summary']
-            assert trace['measured_invocations']==3
+            assert trace['measured_invocations']==1
+            assert trace['warmup_invocations']==0
+            assert trace['request_policy']=='cold_single_request'
             assert result['predicted_allocated_bytes']>=result['model_storage_bytes']
             assert result['predicted_reserved_bytes']>=result['predicted_allocated_bytes']
             assert result['dtype_policy']=='native_cpu_no_rescale'

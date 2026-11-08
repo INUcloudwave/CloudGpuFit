@@ -16,6 +16,8 @@ import json
 import sys
 import time
 import warnings
+import traceback
+from inference_trace_runtime import phase
 
 from vram_policy import memory_result, VERSION
 
@@ -211,12 +213,13 @@ def run(args):
         raise ValueError("max_new_tokens must be positive")
 
     workload_type = getattr(args, "workload_type", None)
-    model, kind, hf_cfg = load_model(
-        args.model,
-        getattr(args, "model_config", None),
-        workload_type,
-        args.dtype,
-    )
+    with phase('model_initialization'):
+        model, kind, hf_cfg = load_model(
+            args.model,
+            getattr(args, "model_config", None),
+            workload_type,
+            args.dtype,
+        )
     pb = param_bytes(model)
 
     resolution = args.resolution
@@ -262,7 +265,11 @@ def run(args):
     inputs = example_batch if isinstance(example_batch, dict) else {"pixel_values":example_batch[0]}
     actual_input_shapes = {key:list(value.shape) for key,value in inputs.items()}
     from cpu_tensor_trace import trace_and_estimate
-    raw = trace_and_estimate(model, inputs, args.mode, args.max_new_tokens, storage_sizes, args.gpu_memory_gb)
+    raw = trace_and_estimate(model, inputs, args.mode, args.max_new_tokens, storage_sizes, args.gpu_memory_gb,
+                             trace_output=getattr(args, 'trace_output', None),
+                             allocator_history=getattr(args, 'allocator_history', False),
+                             warmup_invocations=getattr(args, 'warmup_invocations', 0),
+                             measured_invocations=getattr(args, 'measured_invocations', 1))
 
     accounting = memory_result(raw["memory"]["tensor"], raw["memory"]["segment"],
                                args.dtype, getattr(args,"gpu_name",None))
@@ -310,6 +317,10 @@ def main():
     p.add_argument("--mode", choices=["prefill", "generate"], default="prefill")
     p.add_argument("--max_new_tokens", type=int, default=256)
     p.add_argument("--gpu_memory_gb", type=float, default=80)
+    p.add_argument("--warmup_invocations", type=int, default=0, help="CPU warmup calls; zero for a cold single request")
+    p.add_argument("--measured_invocations", type=int, default=1, help="Traced requests replayed into one allocator; default one")
+    p.add_argument("--trace_output", help="Optional full Chrome trace path for equivalence checks; may be large")
+    p.add_argument("--allocator_history", action="store_true", help="Keep upstream visualization history for debugging")
     a = p.parse_args()
 
     if a.json:
@@ -322,7 +333,9 @@ def main():
     try:
         result = run(a)
     except Exception as e:
+        import inference_trace_runtime
         result = {"status": "error", "error": f"{type(e).__name__}: {e}",
+                  "stage": inference_trace_runtime.LAST_PHASE, "traceback": traceback.format_exc(),
                   "input": {"model": a.model, "batch_size": a.batch_size}}
     print(json.dumps(result, indent=2, ensure_ascii=False))
     sys.exit(0 if result["status"] == "ok" else 1)

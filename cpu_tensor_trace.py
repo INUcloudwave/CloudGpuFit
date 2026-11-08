@@ -5,19 +5,19 @@ estimator heuristics (gradient residency, optimiser state, copied iterations)
 are deliberately not used for inference.
 """
 from __future__ import annotations
-import json
 from pathlib import Path
 import tempfile
 import uuid
+from inference_trace_runtime import phase, read_memory_events, simulate
 
 
 REGION = "cloudgpufit_inference"
 
 
-def selected_lifetimes(events):
+def selected_lifetimes(events, expected_invocations=1):
     regions=[(e['ts'],e['ts']+e['dur']) for e in events if e.get('name')==REGION and e.get('cat')=='user_annotation']
-    if len(regions)!=3:
-        raise ValueError(f"Expected exactly three measured inference regions, got {len(regions)}")
+    if len(regions)!=expected_invocations:
+        raise ValueError(f"Expected {expected_invocations} measured inference regions, got {len(regions)}")
     selected=[];live={}
     for event in sorted(events,key=lambda e:e.get('ts',0)):
         if event.get('cat')!='cpu_instant_event' or event.get('name')!='[memory]':continue
@@ -37,9 +37,14 @@ def selected_lifetimes(events):
     return selected,regions
 
 
-def trace_and_estimate(model, inputs, mode, new_tokens, storage_sizes, gpu_memory_gb):
+def trace_and_estimate(model, inputs, mode, new_tokens, storage_sizes, gpu_memory_gb,
+                       *, trace_output=None, allocator_history=False,
+                       warmup_invocations=0, measured_invocations=1):
+    if type(warmup_invocations) is not int or warmup_invocations < 0:
+        raise ValueError("warmup_invocations must be a nonnegative integer")
+    if type(measured_invocations) is not int or measured_invocations < 1:
+        raise ValueError("measured_invocations must be a positive integer")
     import torch
-    from perf_estimator.allocator import AllocatorSim
     from perf_estimator.profiler import MemoryBlock, CpuInstantNode
     from perf_estimator.config import Config
 
@@ -74,21 +79,40 @@ def trace_and_estimate(model, inputs, mode, new_tokens, storage_sizes, gpu_memor
             output=model(**inputs,use_cache=False)
         del output
 
-    model.eval()
-    hook=model.register_forward_hook(observe_cache) if mode=='generate' else None
-    try:
-        with torch.inference_mode():
-            invoke()  # The same one-request warmup as the shortened GPU benchmark.
-            with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU],
-                    profile_memory=True,record_shapes=False,with_stack=False) as profiler:
-                for _ in range(3):
-                    with torch.profiler.record_function(REGION):invoke()
-    finally:
-        if hook is not None:hook.remove()
+    def capture(trace):
+        # The profiler (including its native Kineto result) is local to this
+        # function and is no longer referenced when JSON parsing starts.
+        model.eval()
+        hook=model.register_forward_hook(observe_cache) if mode=='generate' else None
+        try:
+            with torch.inference_mode():
+                if warmup_invocations:
+                    with phase('warmup'):
+                        for _ in range(warmup_invocations):invoke()
+                with phase('measured_inference_and_profiler_stop'):
+                    profiler = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU],
+                            profile_memory=True,record_shapes=False,with_stack=False)
+                    profiler.start()
+                    try:
+                        with phase('measured_inference'):
+                            for _ in range(measured_invocations):
+                                with torch.profiler.record_function(REGION):invoke()
+                    finally:
+                        with phase('profiler_stop'):
+                            profiler.stop()
+        finally:
+            if hook is not None:hook.remove()
+        with phase('trace_export'):
+            profiler.export_chrome_trace(str(trace))
+
     with tempfile.TemporaryDirectory(prefix='xmem-inference-') as directory:
-        trace=Path(directory)/'trace.json';profiler.export_chrome_trace(str(trace))
-        events=json.loads(trace.read_text())['traceEvents']
-    lifetimes,regions=selected_lifetimes(events)
+        trace=Path(trace_output) if trace_output else Path(directory)/'trace.json'
+        capture(trace)
+        with phase('trace_parse'):
+            events,total_events=read_memory_events(trace, REGION)
+    with phase('lifetime_matching'):
+        lifetimes,regions=selected_lifetimes(events, measured_invocations)
+    del events
     blocks=[]
     for alloc,free in lifetimes:
         block=MemoryBlock(CpuInstantNode(alloc))
@@ -106,15 +130,20 @@ def trace_and_estimate(model, inputs, mode, new_tokens, storage_sizes, gpu_memor
     for index,size in enumerate(weights+initial_inputs):
         if size:blocks.append(resident(size,-index-1))
     blocks.sort(key=lambda b:b.alloc_time)
-    result=AllocatorSim(max_allocated_memory_gb=gpu_memory_gb,config=Config(save2tmp=True,run_id=uuid.uuid4().hex)).simulate(blocks)
-    if result.oom:raise RuntimeError('xMem simulation reached its configured memory ceiling')
+    with phase('allocator_simulation'):
+        result=simulate(blocks,gpu_memory_gb,Config(save2tmp=True,run_id=uuid.uuid4().hex),
+                        record_history=allocator_history)
     allocated=max(result._trace.max_usage_changes)
     reserved=max(result._trace.max_segment_changes)
     if allocated<sum(weights)+sum(initial_inputs):
         raise ValueError('Allocator trace lost resident model/input memory')
     return {'memory':{'tensor':allocated,'segment':reserved},'OOM':False,
-        'trace_summary':{'measured_invocations':3,'warmup_invocations':1,
+        'trace_summary':{'measured_invocations':measured_invocations,'warmup_invocations':warmup_invocations,
+            'request_policy':'cold_single_request' if warmup_invocations==0 and measured_invocations==1 else 'explicit_repeated_requests',
+            'allocator_initial_state':'empty_plus_resident_model_and_inputs',
             **kv_max,
+            'total_profiler_events':total_events,
+            'allocator_history_recorded':allocator_history,
             'tensor_lifetime_count':len(lifetimes),'resident_storage_bytes':sum(weights),
             'input_storage_bytes':sum(initial_inputs),'cpu_device_only':True,
             'method':'native_inference_lifetimes_into_xmem_allocator',

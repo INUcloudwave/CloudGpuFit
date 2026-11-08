@@ -66,7 +66,7 @@ class DeploymentRegressionTests(unittest.TestCase):
             repo.mkdir()
             (work / "xMem").mkdir(parents=True)
             (repo / "predict_vram.py").write_bytes(b"new-predictor")
-            for name in ["cpu_tensor_trace.py", "vram_policy.py", "gpu_overheads.json"]:
+            for name in ["cpu_tensor_trace.py", "inference_trace_runtime.py", "vram_policy.py", "gpu_overheads.json"]:
                 (repo / name).write_bytes(b"new-helper")
             target = work / "xMem" / "predict_vram.py"
             target.write_bytes(b"old-predictor")
@@ -90,7 +90,7 @@ class DeploymentRegressionTests(unittest.TestCase):
             repo.mkdir()
             (work / "xMem").mkdir(parents=True)
             (repo / "predict_vram.py").write_bytes(b"same-predictor")
-            for name in ["cpu_tensor_trace.py", "vram_policy.py", "gpu_overheads.json"]:
+            for name in ["cpu_tensor_trace.py", "inference_trace_runtime.py", "vram_policy.py", "gpu_overheads.json"]:
                 (repo / name).write_bytes(b"same-helper")
                 (work / "xMem" / name).write_bytes(b"same-helper")
             target = work / "xMem" / "predict_vram.py"

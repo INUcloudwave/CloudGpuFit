@@ -25,20 +25,31 @@ class TraceTests(unittest.TestCase):
 
     def test_data_loader_excluded_free_outside_region_kept(self):
         events=self.events()+[self.mem(1,100,2),self.mem(2,-100,2),self.mem(11,16),self.mem(25,-16)]
-        blocks,_=selected_lifetimes(events)
+        blocks,_=selected_lifetimes(events, 3)
         self.assertEqual(len(blocks),1)
         self.assertEqual(blocks[0][1]['ts'],25)
 
     def test_live_cache_not_silently_freed_at_region_end(self):
-        blocks,_=selected_lifetimes(self.events()+[self.mem(11,64)])
+        blocks,_=selected_lifetimes(self.events()+[self.mem(11,64)], 3)
         self.assertIsNone(blocks[0][1])
 
     def test_bad_memory_pair_is_an_error(self):
         with self.assertRaisesRegex(ValueError,'size mismatch'):
-            selected_lifetimes(self.events()+[self.mem(11,64),self.mem(12,-32)])
+            selected_lifetimes(self.events()+[self.mem(11,64),self.mem(12,-32)], 3)
+
+    def test_single_request_default(self):
+        events=[self.events()[0],self.mem(11,64),self.mem(12,-64)]
+        blocks,regions=selected_lifetimes(events)
+        self.assertEqual((len(blocks),len(regions)),(1,1))
+
+    def test_invalid_invocation_counts_rejected(self):
+        from cpu_tensor_trace import trace_and_estimate
+        for kwargs in ({'warmup_invocations':-1},{'measured_invocations':0},{'measured_invocations':1.5}):
+            with self.assertRaises(ValueError):
+                trace_and_estimate(None,None,'generate',1,None,80,**kwargs)
 
     def test_missing_measurement_is_an_error(self):
-        with self.assertRaises(ValueError):selected_lifetimes(self.events()[:2])
+        with self.assertRaises(ValueError):selected_lifetimes(self.events()[:2], 3)
 
 
 class SuiteTests(unittest.TestCase):
