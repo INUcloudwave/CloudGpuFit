@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run selected CPU predictions sequentially in disposable, memory-limited containers.
+"""Run selected CPU predictions with host-memory-gated concurrency in disposable, memory-limited containers.
 
 The prepared xmem-cpu environment is snapshotted locally. Its mounted source and
 all old results remain untouched. Each invocation requires a fresh output path.
@@ -18,6 +18,7 @@ import time
 import uuid
 
 from run_prediction_suite import ROOT, CONFIG, prediction_json, request, save, select_cases
+from prediction_scheduler import host_memory, run_cases
 
 SOURCES = ('predict_vram.py', 'cpu_tensor_trace.py', 'inference_trace_runtime.py',
            'vram_policy.py', 'gpu_overheads.json')
@@ -86,7 +87,7 @@ def stop_job(name):
         docker('kill', name, timeout=15)
 
 
-def run_job(name, command, payload, log, timeout):
+def run_job(name, command, payload, log, timeout, cancel_event=None):
     """The container PID 1 is the predictor, so Docker can attribute OOM kills."""
     proc = None
     timed_out = cancelled = False
@@ -118,7 +119,26 @@ def run_job(name, command, payload, log, timeout):
                     if 'Running' not in active or proc.poll() is not None:
                         break
                     time.sleep(0.05)
-                proc.communicate(json.dumps(payload), timeout=timeout)
+                if cancel_event is None:
+                    proc.communicate(json.dumps(payload), timeout=timeout)
+                else:
+                    deadline = time.monotonic() + timeout
+                    first = True
+                    while True:
+                        if cancel_event.is_set():
+                            cancelled = True
+                            stop_job(name)
+                            break
+                        remaining = deadline-time.monotonic()
+                        if remaining <= 0:
+                            timed_out = True
+                            stop_job(name)
+                            break
+                        try:
+                            proc.communicate(json.dumps(payload) if first else None, timeout=min(1, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            first = False
             except subprocess.TimeoutExpired:
                 timed_out = True
                 stop_job(name)
@@ -203,24 +223,31 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-root', required=True, type=Path)
     selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--all', action='store_true', help='Run all 342 core cases, including old successes')
     selection.add_argument('--case-id', action='append', help='Exact case ID; repeat to select multiple cases')
     selection.add_argument('--remaining-from', type=Path, help='Read-only old results; select every non-successful case')
     parser.add_argument('--container', default='xmem-cpu')
     parser.add_argument('--snapshot-image', help='Reuse an explicit local snapshot after verifying its Python environment')
     parser.add_argument('--compare-with', type=Path, help='Read-only old results for exact allocated/reserved comparison')
     parser.add_argument('--threads', type=int, default=4)
+    parser.add_argument('--jobs', type=int, default=2, help='Maximum concurrent job containers')
+    parser.add_argument('--start-below-used-gib', type=float, default=20, help='Admit a job only when host MemTotal-MemAvailable is at most this value')
+    parser.add_argument('--poll-seconds', type=float, default=1)
+    parser.add_argument('--launch-interval-seconds', type=float, default=5, help='Minimum stagger between concurrent starts; does not delay an idle queue')
     parser.add_argument('--memory-gib', type=float, default=32)
     parser.add_argument('--host-reserve-gib', type=float, default=6)
     parser.add_argument('--timeout-seconds', type=float, default=3600)
     args = parser.parse_args()
-    if args.threads < 1 or args.memory_gib <= 0 or args.host_reserve_gib < 0 or args.timeout_seconds <= 0:
+    if (args.threads < 1 or args.jobs < 1 or args.memory_gib <= 0 or args.host_reserve_gib < 0
+            or args.timeout_seconds <= 0 or args.start_below_used_gib < 0
+            or args.poll_seconds <= 0 or args.launch_interval_seconds < 0):
         parser.error('Invalid resource limits')
     out = args.output_root.resolve()
     if out.exists():
         parser.error('Use a new output directory; existing results are never overwritten')
     plan = json.loads((ROOT/'benchmarks/aws342/selected-plan.json').read_text())
     pins = json.loads((ROOT/'benchmarks/aws342/revisions.json').read_text())
-    cases = choose_cases(plan, args.case_id, args.remaining_from)
+    cases = select_cases(plan, 'all') if args.all else choose_cases(plan, args.case_id, args.remaining_from)
     if not cases:
         print('No incomplete cases selected')
         return 0
@@ -254,9 +281,10 @@ def main():
                                       model, pins[model]['revision'], timeout=120).stdout)
                for model in dict.fromkeys(c['model'] for c in cases)}
     memory_bytes = int(args.memory_gib * GIB)
-    required = memory_bytes + int(args.host_reserve_gib * GIB)
-    if available_bytes() < required:
-        raise RuntimeError('Host MemAvailable is below memory limit + safety reserve; no job started')
+    reserve_bytes = int(args.host_reserve_gib * GIB)
+    threshold_bytes = int(args.start_below_used_gib * GIB)
+    if reserve_bytes >= host_memory()['total_bytes']:
+        raise RuntimeError('Host reserve must be smaller than total host RAM')
     token = uuid.uuid4().hex
     image = 'cloudgpufit-cpu-recovery:' + token
     out.mkdir(parents=True)
@@ -267,8 +295,12 @@ def main():
                 'plan_sha256': hashlib.sha256((ROOT/'benchmarks/aws342/selected-plan.json').read_bytes()).hexdigest(),
                 'revisions_sha256': hashlib.sha256((ROOT/'benchmarks/aws342/revisions.json').read_bytes()).hexdigest(),
                 'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                'threads': args.threads, 'memory_limit_bytes': memory_bytes, 'host_reserve_bytes': required-memory_bytes,
-                'timeout_seconds': args.timeout_seconds, 'jobs': 1,
+                'threads': args.threads, 'memory_limit_bytes': memory_bytes, 'host_reserve_bytes': reserve_bytes,
+                'timeout_seconds': args.timeout_seconds, 'jobs': args.jobs,
+                'admission_used_limit_bytes': threshold_bytes,
+                'memory_usage_definition': 'MemTotal-MemAvailable',
+                'poll_seconds': args.poll_seconds, 'launch_interval_seconds': args.launch_interval_seconds,
+                'scheduler_sha256': hashlib.sha256((ROOT/'tools/prediction_scheduler.py').read_bytes()).hexdigest(),
                 'reused_snapshot': args.snapshot_image,
                 'selection': [c['case_id'] for c in cases], 'started_unix': time.time()}
     save(out/'manifest.json', manifest)
@@ -286,26 +318,29 @@ def main():
             image_id = docker('image', 'inspect', '--format', '{{.Id}}', image, timeout=15).stdout.strip()
         manifest.update(status='running', snapshot_image_id=image_id)
         save(out/'manifest.json', manifest)
-        for number, case in enumerate(cases, 1):
+        numbers = {c['case_id']: i for i, c in enumerate(cases, 1)}
+
+        def execute(case, cancel_event):
             cid = case['case_id']
             payload = request(case, configs[case['model']], args.threads)
             save(out/(cid+'.input.json'), {'case_id': cid, 'revision': pins[case['model']]['revision'], 'request': payload})
             print(f'START {cid}', flush=True)
             case_start = time.monotonic()
             try:
-                if available_bytes() < required:
-                    raise RuntimeError('Host MemAvailable fell below admission threshold')
-                result = run_job('cgf-cpu-' + token[:12] + '-' + str(number),
+                result = run_job('cgf-cpu-' + token[:12] + '-' + str(numbers[cid]),
                                  job_command(image_id, work, cache, memory_bytes, args.threads),
-                                 payload, out/(cid+'.log'), args.timeout_seconds)
-            except KeyboardInterrupt:
-                result = {'status': 'error', 'error_kind': 'cancelled', 'error': 'Recovery interrupted'}
+                                 payload, out/(cid+'.log'), args.timeout_seconds, cancel_event)
             except Exception as exc:
                 result = {'status': 'error', 'error_kind': 'runner_error', 'error': f'{type(exc).__name__}: {exc}'}
                 if isinstance(exc, subprocess.CalledProcessError):
                     result['docker_stderr'] = (exc.stderr or '')[-4000:]
             result.update(case_id=cid, revision=pins[case['model']]['revision'],
                           runner_elapsed_seconds=time.monotonic()-case_start)
+            return result
+
+        def record(case, result):
+            cid = case['case_id']
+            payload = request(case, configs[case['model']], args.threads)
             comparison = compare_reference(cid, payload, result, args.compare_with, pins[case['model']]['revision'])
             result['reference_comparison'] = comparison
             save(out/(cid+'.prediction.json'), result)
@@ -313,14 +348,30 @@ def main():
             manifest['success_count'] += result['status'] == 'ok'
             manifest['elapsed_seconds'] = time.monotonic()-start
             save(out/'manifest.json', manifest)
-            print(f'[{number}/{len(cases)}] {result["status"]} {cid} {result.get("error_kind", "")}', flush=True)
-            if result.get('error_kind') == 'cancelled':
-                interrupted = True
-                break
+            print(f'[{manifest["completed_cases"]}/{len(cases)}] {result["status"]} {cid} {result.get("error_kind", "")}', flush=True)
             if comparison['status'] in ('mismatch', 'incompatible_input'):
                 print('STOP reference comparison: ' + json.dumps(comparison), flush=True)
-                validation_failed = True
-                break
+                return False
+            return True
+
+        def notify(event, **fields):
+            evidence = {'event': event, 'unix_time': time.time(), **fields}
+            with (out/'scheduler.jsonl').open('a') as log:
+                log.write(json.dumps(evidence)+'\n')
+            manifest.update(running_cases=fields.get('running', []), pending_cases=fields.get('pending', 0))
+            if 'memory' in fields:
+                manifest['last_admission_memory'] = fields['memory']
+            save(out/'manifest.json', manifest)
+            if event == 'wait' and fields['reason'] == 'memory':
+                print(f'WAIT host used={fields["memory"]["used_bytes"]/GIB:.2f} GiB; '
+                      f'admission limit={args.start_below_used_gib:.2f} GiB; '
+                      f'running={len(fields["running"])} pending={fields["pending"]}', flush=True)
+
+        flags = run_cases(cases, execute, record, jobs=args.jobs,
+                          threshold_bytes=threshold_bytes, reserve_bytes=reserve_bytes,
+                          poll_seconds=args.poll_seconds, launch_interval_seconds=args.launch_interval_seconds,
+                          notify=notify)
+        interrupted, validation_failed = flags['interrupted'], flags['validation_failed']
     except KeyboardInterrupt:
         interrupted = True
     finally:
