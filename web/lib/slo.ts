@@ -7,6 +7,9 @@ import type { RuntimePrediction, SloInput } from "@/lib/types";
  * or missing the field). Never conflated with "fail": an instance the
  * pipeline never got a number for isn't disqualified, it's un-evaluated.
  */
+// Legacy: only lib/ranking.ts (the old ranking screen) uses this; the result
+// screen now uses orchestrator/recommendation.py. Per-token latency SLOs
+// read as "unknown" here.
 export type SloVerdict = "pass" | "fail" | "unknown";
 
 export interface CandidateSloVerdict {
@@ -41,7 +44,7 @@ export function evaluateSlo(
   const ok = prediction?.status === "ok";
 
   const latency: SloVerdict =
-    ok && prediction!.predicted_p90_ms !== undefined
+    ok && prediction!.predicted_p90_ms !== undefined && slo.max_latency_ms != null
       ? prediction!.predicted_p90_ms <= slo.max_latency_ms
         ? "pass"
         : "fail"

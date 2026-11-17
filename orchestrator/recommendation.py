@@ -12,8 +12,18 @@ task 17/18 and HANDOFF §3.8/§3.9):
     requests are split evenly across units. Mixing types is not recommended.
   * min_throughput_rps is the demand, not a per-instance pass/fail bar:
     units = ceil(demand / (capacity x target_utilization)).
-  * target_utilization defaults to 0.8 (user-adjustable up to 1.0): the
-    predictor reads g6e/g7/g7e 10-20% fast (measured / predicted median 1.09-1.20).
+  * target_utilization defaults to 0.8, user-adjustable from 0.5 to 0.9
+    (TARGET_UTILIZATION_MAX). Queueing: the wait in a simple queue grows like
+    rho / (1 - rho) -- 4x the service time at 80%, 9x at 90%, 19x at 95% --
+    and the predictor reads g6e/g7/g7e 10-20% fast (measured / predicted
+    median 1.09-1.20), so planning past 90% leaves no margin for either.
+  * Latency limit (resolve_latency_limit): Generate workloads take it per
+    output token (TPOT-style) and the request limit is per_token x
+    max_new_tokens, because the predictor's latency is the whole request
+    (prefill + every generated token). Presets: 50 ms/token (real-time,
+    ~20 tokens/s) and 100 ms/token (chat at reading speed, ~10 tokens/s) --
+    the TPOT range LLM-serving work uses for interactive services (DistServe,
+    OSDI'24). Other workloads take a per-request limit. None = no limit.
   * Latency is judged on predicted_p90_ms (the product's current judgement;
     in the agreement evaluation it overflowed least, 6.3% at target 0.8).
   * A batch is usable when its predicted P90 <= max_latency_ms and it is not
@@ -36,12 +46,37 @@ from typing import Any, Iterable, Mapping, Sequence
 
 BATCH_GRID = (1, 8, 16, 32, 64, 128)
 TARGET_UTILIZATION = 0.8
+TARGET_UTILIZATION_MIN = 0.5
+TARGET_UTILIZATION_MAX = 0.9
+LATENCY_PRESETS_MS_PER_TOKEN = {"realtime": 50.0, "standard": 100.0}
 WAIT_FACTOR = 2.0
 SIMILAR_PCT = 10.0
 HOURS_PER_MONTH = 720.0
 BUDGET_SEARCH_MAX_UNITS = 64
 LATENCY_JUDGEMENT = "predicted_p90_ms"
 _EPS = 1e-9
+
+
+def resolve_latency_limit(slo: Mapping[str, Any] | None, max_new_tokens: int | None) -> dict[str, Any]:
+    """The request-level latency limit an SLO means for this workload.
+
+    `slo` may carry latency_per_token_ms (Generate) or max_latency_ms (per
+    request); neither means no limit. Returns {"max_latency_ms": float|None,
+    "basis": "per_token"|"per_request"|"none", "per_token_ms", "tokens"}.
+    """
+    slo = slo or {}
+    per_token = _num(slo.get("latency_per_token_ms"))
+    if per_token is not None:
+        tokens = int(max_new_tokens) if max_new_tokens else None
+        if tokens:
+            return {"max_latency_ms": per_token * tokens, "basis": "per_token",
+                    "per_token_ms": per_token, "tokens": tokens}
+        # no generated tokens (not a Generate workload): read it per request
+        return {"max_latency_ms": per_token, "basis": "per_request", "per_token_ms": None, "tokens": None}
+    limit = _num(slo.get("max_latency_ms"))
+    if limit is not None:
+        return {"max_latency_ms": limit, "basis": "per_request", "per_token_ms": None, "tokens": None}
+    return {"max_latency_ms": None, "basis": "none", "per_token_ms": None, "tokens": None}
 
 
 def batch_grid(max_batch: int, grid: Iterable[int] = BATCH_GRID) -> list[int]:
@@ -156,9 +191,11 @@ def recommend(
         return {"status": "no_slo", "policy": policy, "rows": [], "cheapest": None, "budget_plan": None}
     if not 0 < target_utilization <= 1:
         raise ValueError(f"target_utilization must be in (0, 1], got {target_utilization}")
-    max_latency = float(slo["max_latency_ms"])
+    limit = _num(slo.get("max_latency_ms"))
+    # None -> no latency limit: every predicted batch is usable, verdict "pass".
+    max_latency = limit if limit is not None else math.inf
     demand = float(slo["min_throughput_rps"])
-    policy.update(max_latency_ms=max_latency, demand_rps=demand)
+    policy.update(max_latency_ms=limit, demand_rps=demand)
 
     rows: list[dict[str, Any]] = []
     feasible: dict[str, list[dict]] = {}

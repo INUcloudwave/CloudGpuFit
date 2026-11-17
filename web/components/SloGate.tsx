@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { JobResponse } from "@/lib/types";
+import type { JobResponse, PredictPayload } from "@/lib/types";
 import SloStep from "./SloStep";
 import JobFlow from "./JobFlow";
 
@@ -18,6 +18,7 @@ interface Props {
 export default function SloGate({ jobId, onReset }: Props) {
   const [checked, setChecked] = useState(false);
   const [hasSlo, setHasSlo] = useState(false);
+  const [payload, setPayload] = useState<PredictPayload | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -27,6 +28,7 @@ export default function SloGate({ jobId, onReset }: Props) {
       .then((data: JobResponse) => {
         if (cancelled) return;
         setHasSlo(data.slo !== null);
+        setPayload(data.payload);
         setChecked(true);
       })
       .catch(() => {
@@ -48,8 +50,8 @@ export default function SloGate({ jobId, onReset }: Props) {
     );
   }
 
-  if (!hasSlo) {
-    return <SloStep jobId={jobId} onSubmitted={() => setHasSlo(true)} />;
+  if (!hasSlo && payload) {
+    return <SloStep jobId={jobId} payload={payload} onSubmitted={() => setHasSlo(true)} />;
   }
 
   return <JobFlow jobId={jobId} onReset={onReset} />;

@@ -107,13 +107,31 @@ class SloIn(BaseModel):
     the recommended configuration must carry (it sets the number of units),
     not a per-instance pass/fail bar."""
 
-    max_latency_ms: float = Field(gt=0, allow_inf_nan=False)
+    # Latency limit: at most one of the two. Generate workloads send
+    # latency_per_token_ms (the request limit is x max_new_tokens), others
+    # max_latency_ms (per request). Neither = no latency limit.
+    # recommendation.resolve_latency_limit() turns it into one request limit.
+    max_latency_ms: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    latency_per_token_ms: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    # Which choice on the SLO screen produced the numbers above (display only).
+    latency_preset: Optional[Literal["realtime", "standard", "custom", "none"]] = None
     min_throughput_rps: float = Field(gt=0, allow_inf_nan=False)
     # Planned share of each unit's capacity (units = ceil(demand / (capacity x
-    # this))). 0.8 by default: headroom for traffic bursts and for the
-    # predictor reading some GPUs 10-17% fast (g6e/g7). The user may raise it
-    # to 1.0 (no headroom). Old SLO rows without it read as 0.8.
-    target_utilization: float = Field(default=recommendation.TARGET_UTILIZATION, ge=0.5, le=1.0, allow_inf_nan=False)
+    # this))). 0.8 by default, 0.5-0.9: past 90% queueing delay grows fast
+    # (rho/(1-rho): 4x at 80%, 9x at 90%) and the predictor reads some GPUs
+    # 10-20% fast. Old SLO rows without it read as 0.8.
+    target_utilization: float = Field(
+        default=recommendation.TARGET_UTILIZATION,
+        ge=recommendation.TARGET_UTILIZATION_MIN,
+        le=recommendation.TARGET_UTILIZATION_MAX,
+        allow_inf_nan=False,
+    )
+
+    @model_validator(mode="after")
+    def _one_latency_limit(self):
+        if self.max_latency_ms is not None and self.latency_per_token_ms is not None:
+            raise ValueError("max_latency_ms와 latency_per_token_ms 중 하나만 보낼 수 있습니다.")
+        return self
 
 
 def _validation_message(exc: RequestValidationError) -> str:
@@ -266,15 +284,18 @@ def job_view(row) -> dict[str, Any]:
     if result is None or job["status"] != "succeeded":
         return job
     payload = job["payload"]
+    slo = job.get("slo")
     try:
+        latency = recommendation.resolve_latency_limit(slo, (payload.get("params") or {}).get("max_new_tokens"))
         result["recommendation"] = recommendation.recommend(
             result.get("candidates") or [],
             _curves_for(result, payload),
-            job.get("slo"),
+            {**slo, "max_latency_ms": latency["max_latency_ms"]} if slo else None,
             (payload.get("deployment") or {}).get("budget_usd_per_hour"),
             max_batch=int(payload.get("batch_size") or 1),
-            target_utilization=float((job.get("slo") or {}).get("target_utilization") or recommendation.TARGET_UTILIZATION),
+            target_utilization=float((slo or {}).get("target_utilization") or recommendation.TARGET_UTILIZATION),
         )
+        result["recommendation"]["latency_limit"] = latency
     except Exception as exc:  # noqa: BLE001 - a bad recommendation must not hide the job itself
         logger.exception("recommendation failed for job %s", job["job_id"])
         result["recommendation"] = {"status": "error", "error": str(exc), "rows": []}

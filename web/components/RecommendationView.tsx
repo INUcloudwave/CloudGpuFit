@@ -8,6 +8,12 @@ import type {
   RecommendationRow,
   SloInput,
 } from "@/lib/types";
+import {
+  DEFAULT_TARGET_UTILIZATION,
+  MAX_TARGET_UTILIZATION,
+  MIN_TARGET_UTILIZATION,
+  describeLatency,
+} from "@/lib/sloPresets";
 
 /**
  * Result screen for orchestrator/recommendation.py: one instance type x N
@@ -17,8 +23,6 @@ import type {
  */
 
 type CostUnit = "hour" | "month";
-
-const DEFAULT_TARGET = 0.8;
 
 function money(value: number | null | undefined, digits = 3): string {
   if (value === null || value === undefined) return "—";
@@ -77,13 +81,15 @@ function PlanCard({
   plan,
   costUnit,
   maxLatencyMs,
+  tokens,
   highlight,
 }: {
   title: string;
   subtitle: string;
   plan: RecommendationPlan;
   costUnit: CostUnit;
-  maxLatencyMs: number;
+  maxLatencyMs: number | null;
+  tokens: number | null;
   highlight?: boolean;
 }) {
   return (
@@ -107,7 +113,11 @@ function PlanCard({
         <dd className="font-mono">{plan.operating_batch}</dd>
         <dt className="text-neutral-500">배치 1회 지연 (P90)</dt>
         <dd className="font-mono">
-          {ms(plan.latency_ms)} <span className="text-neutral-400">/ {maxLatencyMs} ms</span>
+          {ms(plan.latency_ms)}
+          {maxLatencyMs !== null && <span className="text-neutral-400"> / {ms(maxLatencyMs)}</span>}
+          {tokens !== null && (
+            <span className="block text-xs text-neutral-400">토큰당 약 {ms(plan.latency_ms / tokens)}</span>
+          )}
         </dd>
         <dt className="text-neutral-500">대기 포함 최악 (2T)</dt>
         <dd className="flex flex-wrap items-center gap-2 font-mono">
@@ -261,7 +271,13 @@ export default function RecommendationView({
   const rec = job.result?.recommendation;
   const slo = job.slo;
   const [costUnit, setCostUnit] = useState<CostUnit>("hour");
-  const appliedTarget = slo?.target_utilization ?? rec?.policy?.target_utilization ?? DEFAULT_TARGET;
+  const appliedTarget = Math.min(
+    slo?.target_utilization ?? rec?.policy?.target_utilization ?? DEFAULT_TARGET_UTILIZATION,
+    MAX_TARGET_UTILIZATION
+  );
+  const limit = rec?.latency_limit ?? null;
+  const maxLatencyMs = limit?.max_latency_ms ?? null;
+  const tokens = limit?.basis === "per_token" ? limit.tokens : null;
   const [draftTarget, setDraftTarget] = useState(Math.round(appliedTarget * 100));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -311,7 +327,7 @@ export default function RecommendationView({
               <div className="flex gap-2">
                 <dt className="font-medium text-neutral-700 dark:text-neutral-300">SLO</dt>
                 <dd>
-                  지연 ≤ {slo.max_latency_ms} ms · 수요 {slo.min_throughput_rps} req/s
+                  {describeLatency(slo, job.payload)} · 수요 {slo.min_throughput_rps} req/s
                 </dd>
               </div>
             )}
@@ -351,16 +367,17 @@ export default function RecommendationView({
               </div>
               <input
                 type="range"
-                min={50}
-                max={100}
+                min={MIN_TARGET_UTILIZATION * 100}
+                max={MAX_TARGET_UTILIZATION * 100}
                 step={5}
                 value={draftTarget}
                 onChange={(e) => setDraftTarget(Number(e.target.value))}
                 className="mt-1 w-full accent-neutral-800 dark:accent-white"
               />
               <p className="text-[11px] leading-snug text-neutral-400">
-                대당 최대 처리량의 몇 %까지 쓸지입니다. 기본 80%는 트래픽 변동과 예측 오차를 위한 여유이고,
-                높일수록 대수·비용이 줄지만 여유가 줄어듭니다.
+                대당 최대 처리량의 몇 %까지 쓸지입니다(기본 80%, 최대 90%). 사용률이 오를수록 요청이 줄을 서는
+                시간이 급격히 늘어 80%에서 처리 시간의 약 4배, 90%에서 약 9배가 됩니다. 예측이 실측보다 10~20%
+                빠르게 나오는 GPU도 있어 여유를 둡니다.
               </p>
               <button
                 type="button"
@@ -391,7 +408,8 @@ export default function RecommendationView({
                 subtitle="SLO를 만족하는 구성 중 가장 저렴합니다."
                 plan={cheapestRow as RecommendationPlan}
                 costUnit={costUnit}
-                maxLatencyMs={slo.max_latency_ms}
+                maxLatencyMs={maxLatencyMs}
+                tokens={tokens}
                 highlight
               />
               {rec.budget_plan && !rec.budget_plan.same_as_cheapest ? (
@@ -400,7 +418,8 @@ export default function RecommendationView({
                   subtitle="예산 안에서 대수를 늘려 지연을 가장 짧게 만든 구성입니다."
                   plan={rec.budget_plan}
                   costUnit={costUnit}
-                  maxLatencyMs={slo.max_latency_ms}
+                  maxLatencyMs={maxLatencyMs}
+                tokens={tokens}
                 />
               ) : (
                 <div className="rounded-xl border border-dashed border-neutral-200 p-5 text-sm text-neutral-500 dark:border-neutral-700">
@@ -415,6 +434,13 @@ export default function RecommendationView({
             </div>
           )}
 
+          {rec.status === "slo_impossible" && tokens !== null && (
+            <p className="text-xs text-neutral-500">
+              생성 토큰 수({tokens}개)를 줄이거나 지연 기준을 ‘일반 대화’나 ‘제한 없음’으로 바꾸면 선택지가 생길 수
+              있습니다.
+            </p>
+          )}
+
           {rec.similar && rec.similar.length > 0 && (
             <p className="text-sm text-neutral-500">
               비용 차이 {rec.policy?.similar_pct ?? 10}% 이내의 다른 선택지:{" "}
@@ -427,7 +453,9 @@ export default function RecommendationView({
           )}
 
           <p className="text-xs leading-relaxed text-neutral-400">
-            지연은 예측기의 P90(보수적 추정)으로 판정합니다. 대기 포함(2T)은 앞 배치가 끝나기를 기다린 요청의
+            지연은 예측기의 P90(보수적 추정)으로 판정합니다. 생성형 모델의 지연은 입력 처리부터 마지막 토큰까지
+            요청 전체 시간이며, 토큰당 기준(실시간 50ms, 일반 100ms)은 LLM 서빙 연구에서 대화형 서비스에 쓰는 토큰
+            간 지연(TPOT) 범위를 따랐습니다. 대기 포함(2T)은 앞 배치가 끝나기를 기다린 요청의
             최악 지연으로, ‘대기 시 초과 가능’은 배치 1회는 SLO 안이지만 대기까지 더하면 넘을 수 있다는 뜻입니다.
             각 인스턴스는 모델 전체를 따로 올리고 요청을 나눠 받습니다. 월 비용은 시간당 × 720시간입니다.
           </p>

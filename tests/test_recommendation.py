@@ -141,5 +141,29 @@ class RecommendTest(unittest.TestCase):
         self.assertEqual([x["instance_type"] for x in r["rows"]], ["b.xlarge", "a.xlarge", "d.xlarge"])
 
 
+class LatencyLimitTest(unittest.TestCase):
+    def test_per_token_times_generated_tokens(self):
+        r = rec.resolve_latency_limit({"latency_per_token_ms": 50, "min_throughput_rps": 1}, 256)
+        self.assertEqual((r["max_latency_ms"], r["basis"], r["tokens"]), (12800, "per_token", 256))
+
+    def test_per_request_and_none(self):
+        self.assertEqual(rec.resolve_latency_limit({"max_latency_ms": 300}, 256)["max_latency_ms"], 300)
+        self.assertEqual(rec.resolve_latency_limit({"min_throughput_rps": 1}, 256)["basis"], "none")
+        self.assertIsNone(rec.resolve_latency_limit(None, None)["max_latency_ms"])
+        # per-token limit on a workload with no generated tokens reads per request
+        self.assertEqual(rec.resolve_latency_limit({"latency_per_token_ms": 80}, None)["basis"], "per_request")
+
+    def test_presets_are_the_documented_values(self):
+        self.assertEqual(rec.LATENCY_PRESETS_MS_PER_TOKEN, {"realtime": 50.0, "standard": 100.0})
+        self.assertEqual((rec.TARGET_UTILIZATION, rec.TARGET_UTILIZATION_MAX), (0.8, 0.9))
+
+    def test_no_latency_limit_uses_full_curve(self):
+        r = rec.recommend(CANDS, CURVES, {"max_latency_ms": None, "min_throughput_rps": 30}, None)
+        a = row(r, "a.xlarge")
+        # b32 (900 ms, 60 rps) is usable now: capacity 60 -> 60 x 0.8 = 48 >= 30 -> 1 unit
+        self.assertEqual((a["capacity_rps"], a["units"], a["verdict"]), (60, 1, "pass"))
+        self.assertIsNone(r["policy"]["max_latency_ms"])
+
+
 if __name__ == "__main__":
     unittest.main()

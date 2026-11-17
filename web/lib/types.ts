@@ -266,6 +266,7 @@ export interface Recommendation {
   cheapest?: string | null;
   similar?: string[];
   budget_plan?: RecommendationPlan | null;
+  latency_limit?: LatencyLimit;
 }
 
 export type JobErrorCode = "oom" | "timeout" | "model_load_failed" | "unsupported_type" | "internal";
@@ -277,12 +278,27 @@ export interface JobError {
 
 /** The user's acceptance bar (PATCH /jobs/{id}/slo) — never a workload input,
  * never a reason to recompute. null until submitted. */
+export type LatencyPreset = "realtime" | "standard" | "custom" | "none";
+
 export interface SloInput {
-  max_latency_ms: number;
+  /** Per-request latency limit (non-Generate workloads). */
+  max_latency_ms?: number | null;
+  /** Per-output-token limit (Generate): request limit = this x max_new_tokens. */
+  latency_per_token_ms?: number | null;
+  /** Which SLO-screen choice produced the numbers (display only). */
+  latency_preset?: LatencyPreset | null;
   /** Demand: the whole configuration must carry this many requests/s. */
   min_throughput_rps: number;
-  /** Planned share of each unit's capacity, 0.5-1.0 (default 0.8). */
+  /** Planned share of each unit's capacity, 0.5-0.9 (default 0.8). */
   target_utilization?: number;
+}
+
+/** recommendation.resolve_latency_limit(): the request-level limit used. */
+export interface LatencyLimit {
+  max_latency_ms: number | null;
+  basis: "per_token" | "per_request" | "none";
+  per_token_ms: number | null;
+  tokens: number | null;
 }
 
 export interface JobResponse {
