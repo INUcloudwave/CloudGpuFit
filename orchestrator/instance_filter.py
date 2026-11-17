@@ -4,8 +4,9 @@ Turns a VRAM requirement into the AWS single-GPU instances that can be
 recommended. An instance with its own eager_runtime target (targets/<instance>/,
 full or built by build_size_target.py) is predicted directly. Every other
 listed size borrows a same-family target's prediction, scaled by vCPU count
-(latency_scale_for_vcpu, FIXME(latency-proxy)) -- a placeholder until that
-size gets its own target, at which point it switches over with no code change.
+(latency_scale_for_vcpu -- 1.0 since the team's size experiment showed no vCPU
+effect, report §7.2) until that size gets its own target, at which point it
+switches over with no code change.
 
 GPU/host specs come from SUPPORTED_GPU_INSTANCES; the target's manifest must
 have been calibrated on the family's GPU (GPU_FAMILIES).
@@ -17,7 +18,7 @@ price None means "available, price unknown" and the budget check is skipped.
 
 History: the vCPU proxy was removed when eager_runtime was integrated and
 restored for the demo, now based on the borrowed target's own vCPU count
-instead of a fixed 4.
+instead of a fixed 4. Its scale is 1.0 since 2026-11 (report §7.2).
 """
 from __future__ import annotations
 
@@ -107,18 +108,20 @@ def instance_spec(instance_type: str, runtime_root: Path = RUNTIME_ROOT) -> dict
     return {**listed, "gpu_family": family, "calibrated_gpu": manifest.get("gpu_name")}
 
 
-# FIXME(latency-proxy): a hand-picked curve, not measured -- "more vCPUs
-# shave a little host-side overhead (kernel launch, input prep)". 3% faster
-# per vCPU doubling over the borrowed target, capped at 15%. Replace with a
-# real per-size target (build_size_target.py) once one is measured; an
-# instance with its own target never goes through this.
-_LATENCY_SCALE_PER_VCPU_DOUBLING = 0.03
-_LATENCY_SCALE_FLOOR = 0.85
+# Same-GPU sizes: latency is NOT scaled by vCPU count. The team's size
+# experiment (report §7.2: g4dn.xlarge..8xlarge, one T4) found at most 0.31%
+# difference in GPU time and 2.90% in Generate request time, with no trend in
+# vCPU, so no vCPU correction is applied to any instance (decided 2026-11).
+# The earlier hand-picked curve (3% faster per vCPU doubling, floor 0.85)
+# ranked bigger sizes of the same GPU above smaller ones for no measured
+# reason. Kept as a function so a measured per-size target still slots in.
+_LATENCY_SCALE_PER_VCPU_DOUBLING = 0.0
+_LATENCY_SCALE_FLOOR = 1.0
 
 
 def latency_scale_for_vcpu(vcpu: int, base_vcpu: int) -> float:
-    """Latency multiplier (<= 1.0) for an instance borrowing a `base_vcpu`
-    target's prediction. No scaling at or below the base's vCPU count."""
+    """Latency multiplier for an instance borrowing a `base_vcpu` target's
+    prediction. Always 1.0 today (no measured vCPU effect, report §7.2)."""
     if vcpu <= base_vcpu:
         return 1.0
     return max(_LATENCY_SCALE_FLOOR, 1.0 - _LATENCY_SCALE_PER_VCPU_DOUBLING * log2(vcpu / base_vcpu))

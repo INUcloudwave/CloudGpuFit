@@ -22,6 +22,11 @@ Rules:
     target's full Generate result is returned unscaled -- the Prefill vCPU
     ratio is not applied -- marked generate_proxy_status
     "unvalidated_same_gpu_base_target" with a warning.
+  * Batch curves (predict_candidate_curves): the same request at every batch
+    of recommendation.batch_grid(batch_size) -- the grid points not above the
+    user's batch, plus that batch. The user's batch is the largest one
+    because VRAM (xMem) was predicted for it only. The recommendation picks
+    the operating batch per instance from this curve.
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from typing import Any, Iterable, Mapping
 
 from eager_runtime import available_targets, predict_runtime_targets
 from instance_filter import supported_instances
+from recommendation import batch_grid
 
 SUPPORTED_WORKLOAD_TYPES = {"decoder_llm", "vision_cls", "text_encdec", "audio_encoder"}
 SUPPORTED_ENGINE_MODES = {"eager", "compiled"}
@@ -250,3 +256,51 @@ def predict_candidate_runtimes(
         "failed": failed,
         "predictions": predictions,
     }
+
+
+_CURVE_FIELDS = ("predicted_median_ms", "predicted_p90_ms", "predicted_throughput_rps", "latency_proxy_of",
+                 "generate_proxy_status", "error_type", "error")
+
+
+def predict_candidate_curves(
+    payload: Mapping[str, Any],
+    candidate_targets: Iterable[str],
+    engine_mode: str = "eager",
+    batches: Iterable[int] | None = None,
+) -> dict[str, Any]:
+    """Batch curve per candidate: predict_candidate_runtimes() once per batch.
+
+    Returns {"batch_grid", "curves": {instance: [{batch, status, ...}]},
+    "by_batch": {batch: status summary}, "user_batch_runtime": the full
+    predict_candidate_runtimes() result at the user's batch (the result shape
+    the job stored before curves existed)}. Never raises.
+    """
+    candidate_list = list(dict.fromkeys(str(t) for t in candidate_targets))
+    user_batch = int(payload["batch_size"])
+    grid = sorted({int(b) for b in batches}) if batches is not None else batch_grid(user_batch)
+    if user_batch not in grid:
+        grid = sorted(set(grid) | {user_batch})
+    curves: dict[str, list[dict[str, Any]]] = {t: [] for t in candidate_list}
+    by_batch: dict[str, dict[str, Any]] = {}
+    user_batch_runtime: dict[str, Any] = {}
+    for batch in grid:
+        result = predict_candidate_runtimes({**payload, "batch_size": batch}, candidate_list, engine_mode)
+        if batch == user_batch:
+            user_batch_runtime = result
+        by_batch[str(batch)] = {
+            key: result.get(key) for key in ("status", "error_code", "error_message", "succeeded", "failed")
+        }
+        predictions = {p.get("target_instance"): p for p in result.get("predictions", [])}
+        for target in candidate_list:
+            p = predictions.get(target)
+            if p is None:
+                curves[target].append({
+                    "batch": batch,
+                    "status": "error",
+                    "error": result.get("error_message") or result.get("status") or "not predicted",
+                })
+                continue
+            point = {"batch": batch, "status": p.get("status")}
+            point.update({key: p[key] for key in _CURVE_FIELDS if p.get(key) is not None})
+            curves[target].append(point)
+    return {"batch_grid": grid, "curves": curves, "by_batch": by_batch, "user_batch_runtime": user_batch_runtime}

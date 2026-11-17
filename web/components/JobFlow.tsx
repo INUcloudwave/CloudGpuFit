@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { InstanceCandidate, JobResponse, PredictPayload, RuntimePrediction, SloInput } from "@/lib/types";
+import type { JobResponse, PredictPayload, SloInput } from "@/lib/types";
 import { errorMessageFor } from "@/lib/jobErrors";
 // VRAM 예측 상세 내역을 다시 보여줄 때 함께 주석 해제.
 // import { BREAKDOWN_LABELS } from "@/lib/jobErrors";
 // import { formatBytesToGb } from "@/lib/format";
 import { WORKLOAD_SCHEMAS } from "@/lib/workloadSchema";
-import type { SloVerdict } from "@/lib/slo";
-import { rankCandidates, DEFAULT_WEIGHTS, type ImportanceWeights } from "@/lib/ranking";
+import RecommendationView from "@/components/RecommendationView";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -38,7 +37,7 @@ function ConditionsSummary({ payload, slo }: { payload: PredictPayload; slo: Slo
           <dd className="inline font-mono">{payload.dtype}</dd>
         </div>
         <div>
-          <dt className="inline text-neutral-400">batch_size: </dt>
+          <dt className="inline text-neutral-400">최대 배치: </dt>
           <dd className="inline font-mono">{payload.batch_size}</dd>
         </div>
         {paramEntries.map(([label, value]) => (
@@ -53,165 +52,9 @@ function ConditionsSummary({ payload, slo }: { payload: PredictPayload; slo: Slo
       </p>
       {slo && (
         <p className="mt-1 text-neutral-500">
-          SLO: Latency ≤ {slo.max_latency_ms}ms · Throughput ≥ {slo.min_throughput_rps}req/s
+          SLO: 지연 ≤ {slo.max_latency_ms}ms · 수요 {slo.min_throughput_rps}req/s
         </p>
       )}
-    </div>
-  );
-}
-
-const SLO_BADGE_STYLE: Record<SloVerdict, string> = {
-  pass: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
-  fail: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
-  unknown: "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400",
-};
-
-const SLO_BADGE_LABEL: Record<SloVerdict, string> = {
-  pass: "충족",
-  fail: "미충족",
-  unknown: "미판정",
-};
-
-function SloBadge({ verdict }: { verdict: SloVerdict }) {
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${SLO_BADGE_STYLE[verdict]}`}>
-      {SLO_BADGE_LABEL[verdict]}
-    </span>
-  );
-}
-
-function formatMonthlyCost(pricePerHour: number | null): string {
-  if (pricePerHour === null) return "비용 미확인";
-  const HOURS_PER_MONTH = 720; // 30일 * 24시간, orchestrator 쪽 예산 입력과 동일한 환산 기준
-  const monthly = pricePerHour * HOURS_PER_MONTH;
-  return `$${monthly.toLocaleString(undefined, { maximumFractionDigits: 2 })} /월`;
-}
-
-function RankingView({
-  job,
-  candidates,
-  predictions,
-  onReset,
-}: {
-  job: JobResponse;
-  candidates: InstanceCandidate[];
-  predictions: RuntimePrediction[];
-  onReset: () => void;
-}) {
-  // Draft slider position vs. the weights actually used for ranking -- the
-  // table only re-sorts when "적용" is clicked, not on every drag tick.
-  const [draftLatencyShare, setDraftLatencyShare] = useState(DEFAULT_WEIGHTS.latency);
-  const [appliedWeights, setAppliedWeights] = useState<ImportanceWeights>(DEFAULT_WEIGHTS);
-  const draftThroughputShare = 100 - draftLatencyShare;
-
-  const ranked = rankCandidates(candidates, predictions, job.slo, appliedWeights);
-
-  return (
-    <div className="mx-auto w-full max-w-6xl space-y-6">
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_260px]">
-        <div>
-          <h2 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">GPU 인스턴스 추천 결과</h2>
-          <p className="mt-1 text-sm text-neutral-500">설정한 조건에 맞는 인스턴스를 비교해 보세요.</p>
-          <dl className="mt-4 space-y-1 text-sm">
-            <div className="flex gap-2">
-              <dt className="font-medium text-neutral-700 dark:text-neutral-300">리전</dt>
-              <dd className="text-neutral-600 dark:text-neutral-400">{job.payload.deployment.aws_region}</dd>
-            </div>
-            {job.slo && (
-              <div className="flex gap-2">
-                <dt className="font-medium text-neutral-700 dark:text-neutral-300">SLO</dt>
-                <dd className="text-neutral-600 dark:text-neutral-400">
-                  Latency ≤ {job.slo.max_latency_ms}ms · Throughput ≥ {job.slo.min_throughput_rps}req/s
-                </dd>
-              </div>
-            )}
-          </dl>
-        </div>
-
-        <div className="self-start rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
-          <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Importance 조정</p>
-          <div className="mt-2 flex items-center justify-between text-xs text-neutral-500">
-            <span>Latency</span>
-            <span>Throughput</span>
-          </div>
-          <div className="flex items-baseline justify-between">
-            <span className="font-mono text-base font-semibold text-neutral-900 dark:text-neutral-100">
-              {(draftLatencyShare / 100).toFixed(2)}
-            </span>
-            <span className="font-mono text-base font-semibold text-neutral-900 dark:text-neutral-100">
-              {(draftThroughputShare / 100).toFixed(2)}
-            </span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            value={draftLatencyShare}
-            onChange={(e) => setDraftLatencyShare(Number(e.target.value))}
-            className="mt-1 w-full accent-neutral-800 dark:accent-white"
-          />
-          <p className="mt-1 text-center text-[11px] text-neutral-400">가중치 합계 1.00</p>
-          <button
-            type="button"
-            onClick={() => setAppliedWeights({ latency: draftLatencyShare, throughput: draftThroughputShare })}
-            className="mt-2 w-full rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-neutral-900"
-          >
-            적용
-          </button>
-        </div>
-      </div>
-
-      <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
-        <div className="border-b border-neutral-200 px-5 py-4 dark:border-neutral-700">
-          <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">추천 인스턴스</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-50 text-left text-xs uppercase text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
-              <tr>
-                <th className="px-5 py-3">순위</th>
-                <th className="px-5 py-3">인스턴스</th>
-                <th className="px-5 py-3">예상 Latency</th>
-                <th className="px-5 py-3">예상 Throughput</th>
-                <th className="px-5 py-3">SLO 상태</th>
-                <th className="px-5 py-3">예상 비용</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {ranked.map((r, i) => {
-                const p = r.prediction;
-                const ok = p?.status === "ok";
-                return (
-                  <tr key={r.candidate.instance_type}>
-                    <td className="px-5 py-3 font-mono text-neutral-400">{i + 1}</td>
-                    <td className="px-5 py-3 font-mono">{r.candidate.instance_type}</td>
-                    <td className="px-5 py-3 font-mono">
-                      {ok && p.predicted_p90_ms !== undefined ? `${p.predicted_p90_ms.toFixed(2)} ms` : "—"}
-                    </td>
-                    <td className="px-5 py-3 font-mono">
-                      {ok && p.predicted_throughput_rps !== undefined
-                        ? `${p.predicted_throughput_rps.toFixed(2)} req/s`
-                        : "—"}
-                    </td>
-                    <td className="px-5 py-3">
-                      <SloBadge verdict={r.sloVerdict} />
-                    </td>
-                    <td className="px-5 py-3 font-mono">{formatMonthlyCost(r.candidate.price_usd_per_hour)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <button
-        type="button"
-        onClick={onReset}
-        className="rounded-lg border border-neutral-300 px-5 py-2.5 text-sm font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
-      >
-        새 예측 시작
-      </button>
     </div>
   );
 }
@@ -375,9 +218,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
   const { vram, candidates, catalog_error, runtime } = result;
 
   if (showRanking) {
-    return (
-      <RankingView job={job} candidates={candidates} predictions={runtime.predictions} onReset={onReset} />
-    );
+    return <RecommendationView job={job} onJobUpdate={setJob} onReset={onReset} />;
   }
 
   return (
@@ -421,7 +262,7 @@ export default function JobFlow({ jobId, onReset }: Props) {
             onClick={() => setShowRanking(true)}
             className="w-full rounded-lg bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white dark:bg-white dark:text-neutral-900"
           >
-            추천 순위 결과 보러가기
+            인스턴스 추천 결과 보러가기
           </button>
           {runtime.status !== "ok" && (
             <RuntimeStatusNote status={runtime.status} message={runtime.error_message} />

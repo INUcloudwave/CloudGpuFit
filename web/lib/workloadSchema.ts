@@ -57,12 +57,25 @@ const MAX_NEW_TOKENS_FIELD = (defaultMaxNewTokens: number): FieldSpec => ({
   hardMin: 1,
 });
 
+// batch_size is the LARGEST batch the service may run, not a fixed one: VRAM
+// is predicted at it, and the recommendation (orchestrator/recommendation.py)
+// picks each instance's operating batch from 1..this value. A larger cap only
+// opens more options (the VRAM requirement grows with it).
+const BATCH_FIELD = (defaultBatch: number): FieldSpec => ({
+  key: "batch_size",
+  label: "최대 배치 (batch_size)",
+  kind: "number",
+  default: defaultBatch,
+  hardMin: 1,
+  helperText: "한 번에 묶어 처리할 수 있는 최대 요청 수. 추천 시 인스턴스별로 이 값 이하에서 운영 배치를 고릅니다.",
+});
+
 export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, WorkloadSchema> = {
   decoder_llm: {
     type: "decoder_llm",
     label: "Decoder-only LLM",
     fields: [
-      { key: "batch_size", label: "batch_size", kind: "number", default: 1, hardMin: 1 },
+      BATCH_FIELD(32),
       { key: "seq_len", label: "seq_len", kind: "number", default: 512, hardMin: 1 },
       MAX_NEW_TOKENS_FIELD(256),
     ],
@@ -71,7 +84,7 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
     type: "vision_cls",
     label: "Vision classification",
     fields: [
-      { key: "batch_size", label: "batch_size", kind: "number", default: 32, hardMin: 1 },
+      BATCH_FIELD(32),
       { key: "resolution", label: "resolution", kind: "number", default: 224, hardMin: 32 },
     ],
   },
@@ -79,7 +92,7 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
     type: "text_encdec",
     label: "Text Encoder-Decoder",
     fields: [
-      { key: "batch_size", label: "batch_size", kind: "number", default: 1, hardMin: 1 },
+      BATCH_FIELD(32),
       { key: "encoder_seq_len", label: "encoder_seq_len", kind: "number", default: 512, hardMin: 1 },
       { key: "decoder_seq_len", label: "decoder_seq_len", kind: "number", default: 128, hardMin: 1 },
       MAX_NEW_TOKENS_FIELD(128),
@@ -89,7 +102,7 @@ export const WORKLOAD_SCHEMAS: Record<Exclude<WorkloadType, "unsupported">, Work
     type: "audio_encdec",
     label: "Audio Encoder-Decoder",
     fields: [
-      { key: "batch_size", label: "batch_size", kind: "number", default: 1, hardMin: 1 },
+      BATCH_FIELD(1),
       {
         key: "audio_chunks",
         label: "audio_chunks",

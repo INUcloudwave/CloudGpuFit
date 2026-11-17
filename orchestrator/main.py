@@ -9,8 +9,15 @@ single-GPU instances down to ones that fit the predicted VRAM/region/budget
 AND have their own eager_runtime target (7 today: g4dn.xlarge, g5.xlarge,
 g6.xlarge, g6e.xlarge, g7.2xlarge, g7e.2xlarge, gr6.4xlarge), then (2) asks
 eager_runtime for FP16 Median/P90 on each of those candidates, in the job's
-engine_mode ("eager" default, or "compiled"). eager_runtime is imported
-directly in-process (no dedicated Runtime HTTP server).
+engine_mode ("eager" default, or "compiled"), at every batch of
+recommendation.batch_grid(batch_size) (the user's batch is the largest one,
+because VRAM was predicted for it). eager_runtime is imported directly
+in-process (no dedicated Runtime HTTP server).
+
+The instance recommendation (recommendation.py: one instance type x N units,
+cheapest within the SLO and budget) is computed whenever a job is read and
+has both a result and an SLO -- it is never stored, so submitting or changing
+the SLO never re-runs prediction.
 """
 
 import asyncio
@@ -29,11 +36,12 @@ from pydantic import BaseModel, Field, model_validator
 
 import aws_pricing
 import db
+import recommendation
 import setup_manager
 from cache_key import pipeline_cache_key_for
 from instance_catalog import catalog_version, load_instance_catalog
 from instance_filter import filter_instances
-from runtime_adapter import predict_candidate_runtimes
+from runtime_adapter import predict_candidate_curves
 from workload_params import validate_params
 from xmem_runner import build_xmem_args, run_xmem
 
@@ -94,11 +102,18 @@ class JobCreate(BaseModel):
 
 
 class SloIn(BaseModel):
-    """The user's acceptance bar, not a workload/arrival-rate input — it never
-    feeds VRAM/Runtime prediction and submitting it never starts a new job."""
+    """The user's latency bar and demand. Never feeds VRAM/Runtime prediction
+    and submitting it never starts a new job. min_throughput_rps is the demand
+    the recommended configuration must carry (it sets the number of units),
+    not a per-instance pass/fail bar."""
 
     max_latency_ms: float = Field(gt=0, allow_inf_nan=False)
     min_throughput_rps: float = Field(gt=0, allow_inf_nan=False)
+    # Planned share of each unit's capacity (units = ceil(demand / (capacity x
+    # this))). 0.8 by default: headroom for traffic bursts and for the
+    # predictor reading some GPUs 10-17% fast (g6e/g7). The user may raise it
+    # to 1.0 (no headroom). Old SLO rows without it read as 0.8.
+    target_utilization: float = Field(default=recommendation.TARGET_UTILIZATION, ge=0.5, le=1.0, allow_inf_nan=False)
 
 
 def _validation_message(exc: RequestValidationError) -> str:
@@ -196,13 +211,17 @@ async def process_job(job_id: str) -> None:
         engine_mode=engine_mode,
     )
 
-    db.set_progress(job_id, "후보 인스턴스별 성능 예측 중…")
-    runtime_result = await asyncio.to_thread(
-        predict_candidate_runtimes,
+    grid = recommendation.batch_grid(int(payload["batch_size"]))
+    db.set_progress(job_id, f"후보 인스턴스별 성능 예측 중… (배치 {', '.join(map(str, grid))})")
+    curves_result = await asyncio.to_thread(
+        predict_candidate_curves,
         payload,
         [candidate["instance_type"] for candidate in candidates],
         engine_mode,
+        grid,
     )
+    # `runtime` keeps the pre-curve shape (predictions at the user's batch).
+    runtime_result = curves_result.pop("user_batch_runtime")
 
     # generate is the only mode the UI sends now, so predict_vram.py's
     # "mode=generate is EXPERIMENTAL" note would show on every LLM job.
@@ -217,8 +236,49 @@ async def process_job(job_id: str) -> None:
         "catalog_error": catalog_error,
         "engine_mode": engine_mode,
         "runtime": runtime_result,
+        "runtime_curves": curves_result,
     }
     db.mark_finished(job_id, "succeeded", result=result)
+
+
+def _curves_for(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Batch curves of a stored result. Jobs stored before curves existed only
+    have the user's batch -> a one-point curve per instance."""
+    stored = result.get("runtime_curves")
+    if stored is not None:
+        return stored.get("curves") or {}
+    batch = int(payload.get("batch_size") or 1)
+    curves: dict[str, list[dict[str, Any]]] = {}
+    for p in (result.get("runtime") or {}).get("predictions") or []:
+        point = {"batch": batch, "status": p.get("status")}
+        for key in ("predicted_median_ms", "predicted_p90_ms", "predicted_throughput_rps", "latency_proxy_of", "error"):
+            if p.get(key) is not None:
+                point[key] = p[key]
+        curves.setdefault(str(p.get("target_instance")), []).append(point)
+    return curves
+
+
+def job_view(row) -> dict[str, Any]:
+    """db.job_to_dict() plus the recommendation, computed on read from the
+    stored result and the current SLO (cheap and pure -- never stored)."""
+    job = db.job_to_dict(row)
+    result = job.get("result")
+    if result is None or job["status"] != "succeeded":
+        return job
+    payload = job["payload"]
+    try:
+        result["recommendation"] = recommendation.recommend(
+            result.get("candidates") or [],
+            _curves_for(result, payload),
+            job.get("slo"),
+            (payload.get("deployment") or {}).get("budget_usd_per_hour"),
+            max_batch=int(payload.get("batch_size") or 1),
+            target_utilization=float((job.get("slo") or {}).get("target_utilization") or recommendation.TARGET_UTILIZATION),
+        )
+    except Exception as exc:  # noqa: BLE001 - a bad recommendation must not hide the job itself
+        logger.exception("recommendation failed for job %s", job["job_id"])
+        result["recommendation"] = {"status": "error", "error": str(exc), "rows": []}
+    return job
 
 
 @app.post("/jobs", status_code=202)
@@ -268,7 +328,7 @@ async def get_job(job_id: str):
     row = db.get_job(job_id)
     if row is None:
         return JSONResponse(status_code=404, content={"error_code": "not_found"})
-    return db.job_to_dict(row)
+    return job_view(row)
 
 
 @app.patch("/jobs/{job_id}/slo")
@@ -280,7 +340,7 @@ async def set_job_slo(job_id: str, body: SloIn):
     if row is None:
         return JSONResponse(status_code=404, content={"error_code": "not_found"})
     db.set_slo(job_id, body.model_dump())
-    return db.job_to_dict(db.get_job(job_id))
+    return job_view(db.get_job(job_id))
 
 
 @app.get("/health")

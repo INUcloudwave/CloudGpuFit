@@ -37,8 +37,9 @@ def fake_predict_runtime_targets(request, targets, *, engine_mode=None, raise_on
         "status": "ok",
         "model": request["model"],
         "predictions": [
-            {"status": "ok", "target_instance": t, "engine_mode": engine_mode,
-             "predicted_median_ms": 5.0, "predicted_p90_ms": 7.0, "warnings": []}
+            {"status": "ok", "target_instance": t, "engine_mode": engine_mode, "batch_size": request["batch_size"],
+             "predicted_median_ms": 5.0, "predicted_p90_ms": 7.0,
+             "predicted_throughput_rps": request["batch_size"] / 0.005, "warnings": []}
             for t in targets
         ],
     }
@@ -88,7 +89,8 @@ check("g5g.xlarge" not in names, "g5g excluded")
 check({"g6.2xlarge", "g6.16xlarge"} <= set(names), "unmeasured same-family sizes offered via proxy")
 check(specs["g6.2xlarge"]["latency_proxy_of"] == "g6.xlarge" and specs["gr6.8xlarge"]["latency_proxy_of"] == "gr6.4xlarge"
       and specs["g7e.4xlarge"]["latency_proxy_of"] == "g7e.2xlarge", "proxy borrows the same-family target")
-check(abs(specs["g7e.4xlarge"]["latency_scale"] - 0.97) < 1e-9, "vCPU scale is relative to the borrowed target")
+check(specs["g7e.4xlarge"]["latency_scale"] == 1.0 and specs["g6.16xlarge"]["latency_scale"] == 1.0,
+      "no vCPU latency scaling for same-GPU sizes (report §7.2)")
 check(next(c for c in cands if c["instance_type"] == "g7.2xlarge")["gpu_vram_gb"] == 32, "g7.2xlarge = 32 GB GPU")
 check(next(c for c in cands if c["instance_type"] == "gr6.4xlarge")["gpu_name"] == "NVIDIA L4", "gr6 resolved via size_profile family g6")
 
@@ -111,10 +113,21 @@ check(r["predictions"][0]["predicted_median_ms"] == 5.0, "own target not scaled"
 r = runtime_adapter.predict_candidate_runtimes(payload, ["g6.xlarge", "g6.8xlarge"], "eager")
 proxied = next(p for p in r["predictions"] if p["target_instance"] == "g6.8xlarge")
 check(calls[-1]["targets"] == ["g6.xlarge"], "borrowed target predicted once")
-check(proxied["latency_proxy_of"] == "g6.xlarge" and abs(proxied["predicted_median_ms"] - 5.0 * 0.91) < 1e-9,
-      "proxy scaled by vCPU")
+check(proxied["latency_proxy_of"] == "g6.xlarge" and proxied["predicted_median_ms"] == 5.0,
+      "proxy uses the same-GPU target's latency unscaled")
 check(runtime_adapter.predict_candidate_runtimes({**payload, "type": "audio_encdec"}, ["g6.xlarge"])["status"] == "skipped", "audio_encdec refused")
 check(runtime_adapter.predict_candidate_runtimes(payload, ["g6.xlarge"], "bogus")["error_code"] == "unsupported_engine_mode", "bad engine_mode refused")
+
+n_before = len(calls)
+cur = runtime_adapter.predict_candidate_curves({**payload, "batch_size": 20}, ["g6.xlarge", "g6.8xlarge", "g5g.xlarge"], "eager")
+check(cur["batch_grid"] == [1, 8, 16, 20], "curve grid = grid points not above the user's batch + that batch")
+check([c["request"]["batch_size"] for c in calls[n_before:]] == [1, 8, 16, 20], "one prediction call per batch")
+check([p["batch"] for p in cur["curves"]["g6.xlarge"]] == [1, 8, 16, 20]
+      and all(p["status"] == "ok" for p in cur["curves"]["g6.8xlarge"]), "curve per candidate, proxy included")
+check(cur["curves"]["g6.8xlarge"][0]["latency_proxy_of"] == "g6.xlarge", "curve keeps latency_proxy_of")
+check(all(p["status"] == "error" for p in cur["curves"]["g5g.xlarge"]), "unpredictable candidate -> error points, no crash")
+check(cur["user_batch_runtime"]["predictions"][0]["batch_size"] == 20, "user_batch_runtime is the user's batch")
+check(set(cur["by_batch"]) == {"1", "8", "16", "20"}, "per-batch status summary")
 
 try:
     workload_params.validate_params("audio_encoder", {"audio_samples": 32000})

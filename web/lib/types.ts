@@ -185,6 +185,87 @@ export interface CombinedPredictionResult {
    * genuinely doesn't sell any of the 4 target instances). */
   catalog_error: string | null;
   runtime: RuntimeTargetsResult;
+  /** Predictions at every batch of the grid (absent on jobs stored before curves). */
+  runtime_curves?: RuntimeCurvesResult;
+  /** orchestrator/recommendation.py, computed when the job is read (never stored). */
+  recommendation?: Recommendation;
+}
+
+/** One batch point of an instance's predicted curve. */
+export interface CurvePoint {
+  batch: number;
+  status: string;
+  predicted_median_ms?: number;
+  predicted_p90_ms?: number;
+  predicted_throughput_rps?: number;
+  latency_proxy_of?: string;
+  error?: string;
+}
+
+export interface RuntimeCurvesResult {
+  batch_grid: number[];
+  curves: Record<string, CurvePoint[]>;
+  by_batch: Record<string, { status: string; error_code?: string; error_message?: string }>;
+}
+
+export type RecommendationStatus =
+  | "ok"
+  | "over_budget"
+  | "no_price"
+  | "slo_impossible"
+  | "no_prediction"
+  | "no_slo"
+  | "error";
+
+export type RowStatus = "ok" | "no_price" | "slo_impossible" | "no_prediction";
+
+/** One instance type x N units (recommendation.py evaluate()). */
+export interface RecommendationPlan {
+  instance_type: string;
+  units: number;
+  operating_batch: number;
+  /** Predicted P90 of one batch (T) at the operating batch. */
+  latency_ms: number;
+  /** Worst case incl. waiting for the previous batch: 2T. */
+  wait_latency_ms: number;
+  /** "pass": 2T <= SLO, "edge": T <= SLO < 2T. */
+  verdict: "pass" | "edge";
+  per_unit_rps: number;
+  capacity_rps: number;
+  utilization: number;
+  cost_usd_per_hour: number;
+  cost_usd_per_month: number;
+  same_as_cheapest?: boolean;
+}
+
+export interface RecommendationRow extends Partial<RecommendationPlan> {
+  instance_type: string;
+  status: RowStatus;
+  price_usd_per_hour: number | null;
+  capacity_batch?: number;
+  over_budget?: boolean;
+  latency_proxy_of?: string | null;
+  min_latency_ms?: number;
+  min_latency_batch?: number;
+  reason?: string;
+}
+
+export interface Recommendation {
+  status: RecommendationStatus;
+  error?: string;
+  policy?: {
+    target_utilization: number;
+    wait_factor: number;
+    similar_pct: number;
+    hours_per_month: number;
+    latency_judgement: string;
+    max_batch: number | null;
+    budget_usd_per_hour: number | null;
+  };
+  rows: RecommendationRow[];
+  cheapest?: string | null;
+  similar?: string[];
+  budget_plan?: RecommendationPlan | null;
 }
 
 export type JobErrorCode = "oom" | "timeout" | "model_load_failed" | "unsupported_type" | "internal";
@@ -198,7 +279,10 @@ export interface JobError {
  * never a reason to recompute. null until submitted. */
 export interface SloInput {
   max_latency_ms: number;
+  /** Demand: the whole configuration must carry this many requests/s. */
   min_throughput_rps: number;
+  /** Planned share of each unit's capacity, 0.5-1.0 (default 0.8). */
+  target_utilization?: number;
 }
 
 export interface JobResponse {
