@@ -14,8 +14,8 @@ recommendation.batch_grid(batch_size) (the user's batch is the largest one,
 because VRAM was predicted for it). eager_runtime is imported directly
 in-process (no dedicated Runtime HTTP server).
 
-The instance recommendation (recommendation.py: one instance type x N units,
-cheapest within the SLO and budget) is computed whenever a job is read and
+The instance recommendation (recommendation.py: one single-GPU instance,
+cheapest meeting both SLOs within budget) is computed whenever a job is read and
 has both a result and an SLO -- it is never stored, so submitting or changing
 the SLO never re-runs prediction.
 """
@@ -104,8 +104,8 @@ class JobCreate(BaseModel):
 class SloIn(BaseModel):
     """The user's latency bar and demand. Never feeds VRAM/Runtime prediction
     and submitting it never starts a new job. min_throughput_rps is the demand
-    the recommended configuration must carry (it sets the number of units),
-    not a per-instance pass/fail bar."""
+    the one recommended instance must carry: an instance passes when
+    demand <= its capacity x target_utilization."""
 
     # Latency limit: at most one of the two. Generate workloads send
     # latency_per_token_ms (the request limit is x max_new_tokens), others
@@ -116,8 +116,8 @@ class SloIn(BaseModel):
     # Which choice on the SLO screen produced the numbers above (display only).
     latency_preset: Optional[Literal["realtime", "standard", "custom", "none"]] = None
     min_throughput_rps: float = Field(gt=0, allow_inf_nan=False)
-    # Planned share of each unit's capacity (units = ceil(demand / (capacity x
-    # this))). 0.8 by default, 0.5-0.9: past 90% queueing delay grows fast
+    # Planned share of the instance's capacity (passes when demand <=
+    # capacity x this). 0.8 by default, 0.5-0.9: past 90% queueing delay grows fast
     # (rho/(1-rho): 4x at 80%, 9x at 90%) and the predictor reads some GPUs
     # 10-20% fast. Old SLO rows without it read as 0.8.
     target_utilization: float = Field(

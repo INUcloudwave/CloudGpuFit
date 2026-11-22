@@ -17,7 +17,7 @@ import {
 
 /**
  * Result screen for orchestrator/recommendation.py: one instance type x N
- * units. The backend computes everything (units, operating batch, verdict,
+ * One instance. The backend computes everything (operating batch, verdict,
  * cost); this component only formats it. Changing the target utilization
  * re-submits the SLO and the backend recomputes on read -- no new prediction.
  */
@@ -70,6 +70,7 @@ function VerdictBadge({ verdict }: { verdict?: "pass" | "edge" }) {
 }
 
 const ROW_STATUS_LABEL: Record<string, string> = {
+  throughput_short: "처리량 SLO 미달",
   no_price: "가격 정보 없음",
   slo_impossible: "지연 SLO 불가",
   no_prediction: "예측 실패",
@@ -82,6 +83,8 @@ function PlanCard({
   costUnit,
   maxLatencyMs,
   tokens,
+  demand,
+  target,
   highlight,
 }: {
   title: string;
@@ -90,6 +93,8 @@ function PlanCard({
   costUnit: CostUnit;
   maxLatencyMs: number | null;
   tokens: number | null;
+  demand: number;
+  target: number;
   highlight?: boolean;
 }) {
   return (
@@ -102,7 +107,7 @@ function PlanCard({
     >
       <p className="text-xs font-medium text-neutral-500">{title}</p>
       <p className="mt-1 font-mono text-2xl font-semibold text-neutral-900 dark:text-neutral-100">
-        {plan.instance_type} × {plan.units}대
+        {plan.instance_type} <span className="text-base font-normal text-neutral-500">× 1대</span>
       </p>
       <p className="mt-0.5 text-xs text-neutral-500">{subtitle}</p>
       <p className="mt-3 font-mono text-lg font-semibold text-neutral-900 dark:text-neutral-100">
@@ -123,9 +128,12 @@ function PlanCard({
         <dd className="flex flex-wrap items-center gap-2 font-mono">
           {ms(plan.wait_latency_ms)} <VerdictBadge verdict={plan.verdict} />
         </dd>
-        <dt className="text-neutral-500">대당 처리량 / 전체 용량</dt>
+        <dt className="text-neutral-500">처리량 SLO</dt>
         <dd className="font-mono">
-          {rps(plan.per_unit_rps)} / {rps(plan.capacity_rps)}
+          수요 {rps(demand)} ≤ {rps(plan.capacity_rps * target)}
+          <span className="block text-xs text-neutral-400">
+            최대 {rps(plan.capacity_rps)}의 {Math.round(target * 100)}%
+          </span>
         </dd>
         <dt className="text-neutral-500">사용률</dt>
         <dd className="font-mono">{pct(plan.utilization)}</dd>
@@ -138,7 +146,9 @@ function StatusNote({ rec }: { rec: Recommendation }) {
   const text: Partial<Record<Recommendation["status"], string>> = {
     no_slo: "SLO가 아직 입력되지 않아 추천을 계산하지 않았습니다.",
     over_budget:
-      "예산 안에서 SLO를 만족하는 구성이 없습니다. 예산을 넘지만 가장 저렴한 구성을 보여 드립니다.",
+      "예산 안에서 SLO를 만족하는 인스턴스가 없습니다. 예산을 넘지만 가장 저렴한 인스턴스를 보여 드립니다.",
+    throughput_short:
+      "한 대로 이 요청량을 감당하는 인스턴스가 없습니다. 표의 '최대 감당 요청량'을 참고해 요청량을 줄이거나, 최대 배치를 늘리거나, 지연 SLO를 완화해 보세요.",
     slo_impossible:
       "어느 후보도 지연 SLO를 만족하지 못합니다. 아래 표의 '최소 지연'을 참고해 SLO를 완화해 보세요.",
     no_price: "후보 인스턴스의 가격 정보가 없어 비용을 계산할 수 없습니다.",
@@ -147,7 +157,11 @@ function StatusNote({ rec }: { rec: Recommendation }) {
   };
   const body = text[rec.status];
   if (!body) return null;
-  const danger = rec.status === "error" || rec.status === "slo_impossible" || rec.status === "no_prediction";
+  const danger =
+    rec.status === "error" ||
+    rec.status === "slo_impossible" ||
+    rec.status === "throughput_short" ||
+    rec.status === "no_prediction";
   return (
     <p
       className={`rounded-lg px-4 py-3 text-sm ${
@@ -177,7 +191,7 @@ function RowsTable({
       <div className="border-b border-neutral-200 px-5 py-4 dark:border-neutral-700">
         <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">전체 후보</h3>
         <p className="mt-0.5 text-xs text-neutral-500">
-          인스턴스마다 수요를 감당하는 최소 대수와, 그 대수에서 지연이 가장 짧은 운영 배치를 계산했습니다.
+          인스턴스마다 지연 SLO 안에서 낼 수 있는 최대 처리량과, 요청량을 감당하는 가장 작은 운영 배치를 계산했습니다.
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -185,7 +199,7 @@ function RowsTable({
           <thead className="bg-neutral-50 text-left text-xs text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
             <tr>
               <th className="px-4 py-3">인스턴스</th>
-              <th className="px-4 py-3">대수</th>
+              <th className="px-4 py-3">최대 감당 요청량</th>
               <th className="px-4 py-3">운영 배치</th>
               <th className="px-4 py-3">지연 P90 (T)</th>
               <th className="px-4 py-3">대기 포함 (2T)</th>
@@ -229,7 +243,7 @@ function RowsTable({
                   </td>
                   {r.status === "ok" ? (
                     <>
-                      <td className="px-4 py-3 font-mono">{r.units}</td>
+                      <td className="px-4 py-3 font-mono">{rps(r.max_demand_rps)}</td>
                       <td className="px-4 py-3 font-mono">{r.operating_batch}</td>
                       <td className="px-4 py-3 font-mono">{ms(r.latency_ms)}</td>
                       <td className="px-4 py-3">
@@ -247,6 +261,12 @@ function RowsTable({
                         <> — 최소 지연 {ms(r.min_latency_ms)} (배치 {r.min_latency_batch})</>
                       )}
                       {r.status === "no_prediction" && r.reason && <> — {r.reason}</>}
+                      {r.status === "throughput_short" && (
+                        <>
+                          {" "}— 최대 감당 요청량 {rps(r.max_demand_rps)} (배치 {r.capacity_batch}, 지연{" "}
+                          {ms(r.capacity_latency_ms)}) · {costText(r, costUnit)}
+                        </>
+                      )}
                     </td>
                   )}
                 </tr>
@@ -314,7 +334,8 @@ export default function RecommendationView({
         <div>
           <h2 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">GPU 인스턴스 추천 결과</h2>
           <p className="mt-1 text-sm text-neutral-500">
-            한 종류의 인스턴스를 필요한 대수만큼 띄우는 구성 중, SLO를 만족하는 가장 저렴한 구성을 추천합니다.
+            AI 워크로드를 인스턴스 한 대에 올린다는 가정에서, 지연·처리량 SLO를 모두 만족하는 가장 저렴한 인스턴스를
+            추천합니다.
           </p>
           <dl className="mt-3 space-y-1 text-sm text-neutral-600 dark:text-neutral-400">
             <div className="flex gap-2">
@@ -404,30 +425,34 @@ export default function RecommendationView({
           {cheapestRow && slo && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <PlanCard
-                title={rec.status === "over_budget" ? "가장 저렴한 구성 (예산 초과)" : "추천 — 최저 비용"}
-                subtitle="SLO를 만족하는 구성 중 가장 저렴합니다."
+                title={rec.status === "over_budget" ? "가장 저렴한 인스턴스 (예산 초과)" : "추천 — 최저 비용"}
+                subtitle="지연·처리량 SLO를 모두 만족하는 인스턴스 중 가장 저렴합니다."
                 plan={cheapestRow as RecommendationPlan}
                 costUnit={costUnit}
                 maxLatencyMs={maxLatencyMs}
                 tokens={tokens}
+                demand={slo.min_throughput_rps}
+                target={appliedTarget}
                 highlight
               />
               {rec.budget_plan && !rec.budget_plan.same_as_cheapest ? (
                 <PlanCard
                   title="예산 활용 — 최저 지연"
-                  subtitle="예산 안에서 대수를 늘려 지연을 가장 짧게 만든 구성입니다."
+                  subtitle="예산 안에서 지연이 가장 짧은 인스턴스입니다."
                   plan={rec.budget_plan}
                   costUnit={costUnit}
                   maxLatencyMs={maxLatencyMs}
                 tokens={tokens}
+                  demand={slo.min_throughput_rps}
+                  target={appliedTarget}
                 />
               ) : (
                 <div className="rounded-xl border border-dashed border-neutral-200 p-5 text-sm text-neutral-500 dark:border-neutral-700">
                   <p className="text-xs font-medium">예산 활용 — 최저 지연</p>
                   <p className="mt-2">
                     {rec.budget_plan
-                      ? "예산 안에서 더 빠른 구성이 없어 최저 비용 구성과 같습니다."
-                      : "예산 안에 들어가는 구성이 없습니다."}
+                      ? "예산 안에서 더 빠른 인스턴스가 없어 최저 비용안과 같습니다."
+                      : "예산 안에 들어가는 인스턴스가 없습니다."}
                   </p>
                 </div>
               )}
@@ -457,7 +482,7 @@ export default function RecommendationView({
             요청 전체 시간이며, 토큰당 기준(실시간 50ms, 일반 100ms)은 LLM 서빙 연구에서 대화형 서비스에 쓰는 토큰
             간 지연(TPOT) 범위를 따랐습니다. 대기 포함(2T)은 앞 배치가 끝나기를 기다린 요청의
             최악 지연으로, ‘대기 시 초과 가능’은 배치 1회는 SLO 안이지만 대기까지 더하면 넘을 수 있다는 뜻입니다.
-            각 인스턴스는 모델 전체를 따로 올리고 요청을 나눠 받습니다. 월 비용은 시간당 × 720시간입니다.
+            처리량 SLO는 인스턴스 한 대가 최대 처리량의 목표 사용률(기본 80%) 안에서 요청량을 감당하는지로 판정합니다. 월 비용은 시간당 × 720시간입니다.
           </p>
         </>
       )}

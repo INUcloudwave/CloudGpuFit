@@ -52,7 +52,7 @@ function OptionCard({
  * screen. Latency: Generate workloads choose a per-output-token limit (the
  * request limit is that x max_new_tokens, see lib/sloPresets.ts), others a
  * per-request limit; both can be "no limit". Throughput: the demand the whole
- * configuration must carry -- it sets how many units are needed. */
+ * single recommended instance must carry within its target utilization. */
 export default function SloStep({ jobId, payload, onSubmitted }: Props) {
   const tokens = generatedTokens(payload);
   const isGenerate = tokens !== null;
@@ -175,8 +175,8 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
           예상 수요 (초당 요청 수)
         </label>
         <p className="text-xs text-neutral-500">
-          서비스 전체에 들어올 초당 요청 수입니다. 인스턴스 한 대가 감당하지 못하면 같은 인스턴스를 여러 대로 나눠
-          처리하도록 대수를 계산합니다.
+          서비스 전체에 들어올 초당 요청 수입니다. 추천하는 인스턴스 한 대가 이 요청량을 최대 처리량의
+          80%(목표 사용률) 안에서 감당해야 합니다.
         </p>
         <input
           type="number"

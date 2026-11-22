@@ -211,18 +211,18 @@ export interface RuntimeCurvesResult {
 export type RecommendationStatus =
   | "ok"
   | "over_budget"
+  | "throughput_short"
   | "no_price"
   | "slo_impossible"
   | "no_prediction"
   | "no_slo"
   | "error";
 
-export type RowStatus = "ok" | "no_price" | "slo_impossible" | "no_prediction";
+export type RowStatus = "ok" | "throughput_short" | "no_price" | "slo_impossible" | "no_prediction";
 
-/** One instance type x N units (recommendation.py evaluate()). */
+/** One instance serving the whole demand (recommendation.py evaluate()). */
 export interface RecommendationPlan {
   instance_type: string;
-  units: number;
   operating_batch: number;
   /** Predicted P90 of one batch (T) at the operating batch. */
   latency_ms: number;
@@ -230,7 +230,9 @@ export interface RecommendationPlan {
   wait_latency_ms: number;
   /** "pass": 2T <= SLO, "edge": T <= SLO < 2T. */
   verdict: "pass" | "edge";
-  per_unit_rps: number;
+  /** Predicted throughput at the operating batch (>= demand). */
+  operating_rps: number;
+  /** Largest throughput among batches within the latency SLO. */
   capacity_rps: number;
   utilization: number;
   cost_usd_per_hour: number;
@@ -243,6 +245,10 @@ export interface RecommendationRow extends Partial<RecommendationPlan> {
   status: RowStatus;
   price_usd_per_hour: number | null;
   capacity_batch?: number;
+  /** capacity_rps x target utilization: the most demand this instance takes. */
+  max_demand_rps?: number;
+  /** P90 at capacity_batch (throughput_short rows). */
+  capacity_latency_ms?: number;
   over_budget?: boolean;
   latency_proxy_of?: string | null;
   min_latency_ms?: number;
