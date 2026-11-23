@@ -8,6 +8,7 @@ import type {
   RecommendationRow,
   SloInput,
 } from "@/lib/types";
+import { PRESET_LABEL, PRESET_WEIGHTS, relative, scoreRows, type ScoredRow, type WeightPreset } from "@/lib/weighting";
 import {
   DEFAULT_TARGET_UTILIZATION,
   MAX_TARGET_UTILIZATION,
@@ -180,12 +181,18 @@ function RowsTable({
   cheapest,
   similar,
   costUnit,
+  scored,
 }: {
   rows: RecommendationRow[];
   cheapest: string | null | undefined;
   similar: string[];
   costUnit: CostUnit;
+  scored: ScoredRow[];
 }) {
+  // Passing rows in the user's weighted order first, then the rest as the
+  // backend ordered them.
+  const ratios = new Map(scored.map((s) => [s.row.instance_type, s]));
+  const ordered = [...scored.map((s) => s.row), ...rows.filter((r) => !ratios.has(r.instance_type))];
   return (
     <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
       <div className="border-b border-neutral-200 px-5 py-4 dark:border-neutral-700">
@@ -205,10 +212,11 @@ function RowsTable({
               <th className="px-4 py-3">대기 포함 (2T)</th>
               <th className="px-4 py-3">사용률</th>
               <th className="px-4 py-3">비용</th>
+              <th className="px-4 py-3">최저 대비 (요금 / 지연)</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-            {rows.map((r) => {
+            {ordered.map((r) => {
               const isCheapest = r.instance_type === cheapest;
               const isSimilar = similar.includes(r.instance_type);
               return (
@@ -253,9 +261,16 @@ function RowsTable({
                       </td>
                       <td className="px-4 py-3 font-mono">{pct(r.utilization)}</td>
                       <td className="px-4 py-3 font-mono">{costText(r, costUnit)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">
+                        {ratios.has(r.instance_type)
+                          ? `×${ratios.get(r.instance_type)!.costRatio.toFixed(2)} / ×${ratios
+                              .get(r.instance_type)!
+                              .latencyRatio.toFixed(2)}`
+                          : "—"}
+                      </td>
                     </>
                   ) : (
-                    <td className="px-4 py-3 text-xs" colSpan={6}>
+                    <td className="px-4 py-3 text-xs" colSpan={7}>
                       {ROW_STATUS_LABEL[r.status] ?? r.status}
                       {r.status === "slo_impossible" && r.min_latency_ms !== undefined && (
                         <> — 최소 지연 {ms(r.min_latency_ms)} (배치 {r.min_latency_batch})</>
@@ -291,6 +306,7 @@ export default function RecommendationView({
   const rec = job.result?.recommendation;
   const slo = job.slo;
   const [costUnit, setCostUnit] = useState<CostUnit>("hour");
+  const [preset, setPreset] = useState<WeightPreset>("cost");
   const appliedTarget = Math.min(
     slo?.target_utilization ?? rec?.policy?.target_utilization ?? DEFAULT_TARGET_UTILIZATION,
     MAX_TARGET_UTILIZATION
@@ -326,6 +342,13 @@ export default function RecommendationView({
   }
 
   const cheapestRow = rec?.rows.find((r) => r.instance_type === rec.cheapest && r.status === "ok");
+  const scored = rec ? scoreRows(rec.rows, PRESET_WEIGHTS[preset]) : [];
+  const pick = scored[0] ?? null;
+  // Second card: the other end, so the user sees the trade-off.
+  const compare =
+    preset === "cost"
+      ? scoreRows(rec?.rows ?? [], PRESET_WEIGHTS.speed)[0] ?? null
+      : scored.find((x) => x.row.instance_type === cheapestRow?.instance_type) ?? null;
   const budget = job.payload.deployment.budget_usd_per_hour;
 
   return (
@@ -422,41 +445,76 @@ export default function RecommendationView({
         <>
           <StatusNote rec={rec} />
 
-          {cheapestRow && slo && (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <PlanCard
-                title={rec.status === "over_budget" ? "가장 저렴한 인스턴스 (예산 초과)" : "추천 — 최저 비용"}
-                subtitle="지연·처리량 SLO를 모두 만족하는 인스턴스 중 가장 저렴합니다."
-                plan={cheapestRow as RecommendationPlan}
-                costUnit={costUnit}
-                maxLatencyMs={maxLatencyMs}
-                tokens={tokens}
-                demand={slo.min_throughput_rps}
-                target={appliedTarget}
-                highlight
-              />
-              {rec.budget_plan && !rec.budget_plan.same_as_cheapest ? (
+          {pick && slo && (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-neutral-500">무엇을 중시하나요?</span>
+                {(["cost", "speed", "balanced"] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setPreset(p)}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                      preset === p
+                        ? "border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-900"
+                        : "border-neutral-300 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400"
+                    }`}
+                  >
+                    {PRESET_LABEL[p]}
+                  </button>
+                ))}
+                <span className="text-[11px] text-neutral-400">
+                  SLO를 모두 만족하는 인스턴스 안에서만 순서를 바꿉니다. 처리량은 SLO를 통과하면 모두 같게 봅니다.
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <PlanCard
-                  title="예산 활용 — 최저 지연"
-                  subtitle="예산 안에서 지연이 가장 짧은 인스턴스입니다."
-                  plan={rec.budget_plan}
+                  title={
+                    rec.status === "over_budget"
+                      ? `${PRESET_LABEL[preset]} (예산 초과)`
+                      : `추천 — ${PRESET_LABEL[preset]}`
+                  }
+                  subtitle={
+                    preset === "cost"
+                      ? "지연·처리량 SLO를 모두 만족하는 인스턴스 중 가장 저렴합니다."
+                      : preset === "speed"
+                        ? "지연·처리량 SLO를 모두 만족하는 인스턴스 중 지연이 가장 짧습니다."
+                        : "요금과 지연을 같은 비중으로 보고, 최저 대비 배수의 평균이 가장 작은 인스턴스입니다."
+                  }
+                  plan={pick.row as RecommendationPlan}
                   costUnit={costUnit}
                   maxLatencyMs={maxLatencyMs}
-                tokens={tokens}
+                  tokens={tokens}
                   demand={slo.min_throughput_rps}
                   target={appliedTarget}
+                  highlight
                 />
-              ) : (
-                <div className="rounded-xl border border-dashed border-neutral-200 p-5 text-sm text-neutral-500 dark:border-neutral-700">
-                  <p className="text-xs font-medium">예산 활용 — 최저 지연</p>
-                  <p className="mt-2">
-                    {rec.budget_plan
-                      ? "예산 안에서 더 빠른 인스턴스가 없어 최저 비용안과 같습니다."
-                      : "예산 안에 들어가는 인스턴스가 없습니다."}
-                  </p>
-                </div>
-              )}
-            </div>
+                {compare && compare.row.instance_type !== pick.row.instance_type ? (
+                  <div className="space-y-2">
+                    <PlanCard
+                      title={preset === "cost" ? "비교 — 속도 중시라면" : "비교 — 비용 중시라면"}
+                      subtitle={`추천 대비 요금 ${relative(
+                        compare.row.cost_usd_per_hour!,
+                        pick.row.cost_usd_per_hour!
+                      )}, 지연 ${relative(compare.row.latency_ms!, pick.row.latency_ms!)}`}
+                      plan={compare.row as RecommendationPlan}
+                      costUnit={costUnit}
+                      maxLatencyMs={maxLatencyMs}
+                      tokens={tokens}
+                      demand={slo.min_throughput_rps}
+                      target={appliedTarget}
+                    />
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-neutral-200 p-5 text-sm text-neutral-500 dark:border-neutral-700">
+                    <p className="text-xs font-medium">비교</p>
+                    <p className="mt-2">
+                      가장 싼 인스턴스가 지연도 가장 짧아, 어느 기준으로 봐도 같은 인스턴스가 추천됩니다.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           {rec.status === "slo_impossible" && tokens !== null && (
@@ -474,7 +532,13 @@ export default function RecommendationView({
           )}
 
           {rec.rows.length > 0 && (
-            <RowsTable rows={rec.rows} cheapest={rec.cheapest} similar={rec.similar ?? []} costUnit={costUnit} />
+            <RowsTable
+              rows={rec.rows}
+              cheapest={pick?.row.instance_type ?? rec.cheapest}
+              similar={preset === "cost" ? rec.similar ?? [] : []}
+              costUnit={costUnit}
+              scored={scored}
+            />
           )}
 
           <p className="text-xs leading-relaxed text-neutral-400">

@@ -46,6 +46,118 @@ function OptionCard({
   );
 }
 
+/** Throughput SLO calculator. Two standard ways to turn what a user knows
+ * into requests/s; the result fills the throughput input, which stays
+ * editable. Neither feeds prediction.
+ *  - Concurrent users (interactive services): throughput = N / Z, where Z is
+ *    how often one user sends a new request (their whole cycle: waiting for
+ *    the answer + reading + typing). This is the interactive response time
+ *    law, a form of Little's law (L = lambda x W).
+ *  - Daily requests: throughput = daily / 86,400 s x peak factor (peak hour
+ *    vs. the daily average; service-specific, so the user supplies it). */
+function ThroughputHelper({ onApply }: { onApply: (rps: number) => void }) {
+  const [mode, setMode] = useState<"users" | "daily">("users");
+  const [usersRaw, setUsersRaw] = useState("100");
+  const [intervalRaw, setIntervalRaw] = useState("60");
+  const [dailyRaw, setDailyRaw] = useState("100000");
+  const [peakRaw, setPeakRaw] = useState("3");
+
+  const users = Number(usersRaw);
+  const interval = Number(intervalRaw);
+  const daily = Number(dailyRaw);
+  const peak = Number(peakRaw);
+  const result =
+    mode === "users"
+      ? users > 0 && interval > 0
+        ? users / interval
+        : null
+      : daily > 0 && peak >= 1
+        ? (daily / 86400) * peak
+        : null;
+  const shown = result === null ? null : Math.round(result * 100) / 100;
+
+  return (
+    <details className="rounded-lg border border-neutral-200 p-3 text-sm dark:border-neutral-700">
+      <summary className="cursor-pointer text-xs font-medium text-neutral-700 dark:text-neutral-300">
+        초당 요청 수를 모르겠다면 — 계산 도우미
+      </summary>
+      <div className="mt-3 space-y-3">
+        <div className="inline-flex rounded-lg border border-neutral-300 p-0.5 text-xs dark:border-neutral-700">
+          {(
+            [
+              ["users", "동시 사용자로"],
+              ["daily", "하루 요청 수로"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setMode(id)}
+              className={`rounded-md px-3 py-1.5 font-medium ${
+                mode === id
+                  ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                  : "text-neutral-600 dark:text-neutral-400"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === "users" ? (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="block text-xs text-neutral-600 dark:text-neutral-400">동시 사용자 수 (명)</span>
+              <input type="number" min={0} value={usersRaw} onChange={(e) => setUsersRaw(e.target.value)} className={INPUT_CLASS} />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-xs text-neutral-600 dark:text-neutral-400">한 사람의 요청 간격 (초)</span>
+              <input type="number" min={0} value={intervalRaw} onChange={(e) => setIntervalRaw(e.target.value)} className={INPUT_CLASS} />
+            </label>
+            <p className="col-span-2 text-xs text-neutral-500">
+              요청 간격 = 한 사람이 질문을 보내고, 답을 받아 읽고, 다음 질문을 보내기까지의 시간. 초당 요청 수 =
+              동시 사용자 수 ÷ 요청 간격 (Little의 법칙).
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="block text-xs text-neutral-600 dark:text-neutral-400">하루 요청 수 (건)</span>
+              <input type="number" min={0} value={dailyRaw} onChange={(e) => setDailyRaw(e.target.value)} className={INPUT_CLASS} />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-xs text-neutral-600 dark:text-neutral-400">피크 배율 (배)</span>
+              <input type="number" min={1} step="0.5" value={peakRaw} onChange={(e) => setPeakRaw(e.target.value)} className={INPUT_CLASS} />
+            </label>
+            <p className="col-span-2 text-xs text-neutral-500">
+              피크 배율 = 가장 바쁜 시간의 요청량이 하루 평균의 몇 배인지 (서비스마다 다름). 초당 요청 수 = 하루
+              요청 수 ÷ 86,400초 × 피크 배율.
+            </p>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-3 rounded-lg bg-neutral-50 px-3 py-2 dark:bg-neutral-900">
+          <span className="text-xs text-neutral-600 dark:text-neutral-400">
+            {shown === null
+              ? mode === "users"
+                ? "0보다 큰 값을 입력하세요."
+                : "하루 요청 수는 0보다, 피크 배율은 1 이상이어야 합니다."
+              : `→ 초당 약 ${shown.toLocaleString()}건`}
+          </span>
+          <button
+            type="button"
+            disabled={shown === null || shown <= 0}
+            onClick={() => shown && onApply(shown)}
+            className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-neutral-900"
+          >
+            이 값 사용
+          </button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 /** Shown right after job creation, before the progress/result screen. The
  * numbers entered here never feed prediction (already running in the
  * background); the recommendation is computed from them on the result
@@ -117,7 +229,7 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
       </div>
 
       <div className="space-y-2">
-        <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">허용 지연</p>
+        <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">지연 SLO</p>
         {isGenerate ? (
           <>
             <p className="text-xs text-neutral-500">
@@ -172,11 +284,14 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
 
       <div className="space-y-1">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-          예상 수요 (초당 요청 수)
+          처리량 SLO (초당 요청 수)
         </label>
         <p className="text-xs text-neutral-500">
-          서비스 전체에 들어올 초당 요청 수입니다. 추천하는 인스턴스 한 대가 이 요청량을 최대 처리량의
+          서비스 전체에 1초 동안 들어올 요청 수입니다. 추천하는 인스턴스 한 대가 이 요청량을 최대 처리량의
           80%(목표 사용률) 안에서 감당해야 합니다.
+          {isGenerate
+            ? ` 요청 1건 = 프롬프트 1개에 답변 ${tokens}토큰 생성.`
+            : " 요청 1건 = 입력 1개(예: 이미지 1장) 처리."}
         </p>
         <input
           type="number"
@@ -187,6 +302,7 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
           className={INPUT_CLASS}
         />
         {!minThroughputValid && <p className="text-xs text-red-600">0보다 큰 값을 입력하세요.</p>}
+        <ThroughputHelper onApply={(v) => setMinThroughputRaw(String(v))} />
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
