@@ -103,9 +103,14 @@ class JobCreate(BaseModel):
 
 class SloIn(BaseModel):
     """The user's latency bar and demand. Never feeds VRAM/Runtime prediction
-    and submitting it never starts a new job. min_throughput_rps is the demand
-    the one recommended instance must carry: an instance passes when
-    demand <= its capacity x target_utilization."""
+    and submitting it never starts a new job.
+
+    purpose "online": min_throughput_rps is the demand the one recommended
+    instance must carry (passes when demand <= its capacity x
+    target_utilization). purpose "offline": no arrival rate; total_requests
+    (optional) is the amount of work, for completion time and cost."""
+
+    purpose: Literal["online", "offline"] = "online"
 
     # Latency limit: at most one of the two. Generate workloads send
     # latency_per_token_ms (the request limit is x max_new_tokens), others
@@ -115,11 +120,13 @@ class SloIn(BaseModel):
     latency_per_token_ms: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     # Which choice on the SLO screen produced the numbers above (display only).
     latency_preset: Optional[Literal["realtime", "standard", "custom", "none"]] = None
-    min_throughput_rps: float = Field(gt=0, allow_inf_nan=False)
-    # Planned share of the instance's capacity (passes when demand <=
-    # capacity x this). 0.8 by default, 0.5-0.9: past 90% queueing delay grows fast
-    # (rho/(1-rho): 4x at 80%, 9x at 90%) and the predictor reads some GPUs
-    # 10-20% fast. Old SLO rows without it read as 0.8.
+    min_throughput_rps: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    total_requests: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    # Target load ("목표 부하율" on screen): demand / throughput, not GPU
+    # utilization. Online only (passes when demand <= capacity x this, and the
+    # operating batch keeps demand <= its throughput x this). 0.8 by default,
+    # 0.5-0.9: headroom for prediction error (some GPUs read 10-20% fast) and
+    # traffic peaks. Old SLO rows without it read as 0.8.
     target_utilization: float = Field(
         default=recommendation.TARGET_UTILIZATION,
         ge=recommendation.TARGET_UTILIZATION_MIN,
@@ -131,6 +138,8 @@ class SloIn(BaseModel):
     def _one_latency_limit(self):
         if self.max_latency_ms is not None and self.latency_per_token_ms is not None:
             raise ValueError("max_latency_ms와 latency_per_token_ms 중 하나만 보낼 수 있습니다.")
+        if self.purpose == "online" and self.min_throughput_rps is None:
+            raise ValueError("온라인 서빙은 처리량 SLO(min_throughput_rps)가 필요합니다.")
         return self
 
 

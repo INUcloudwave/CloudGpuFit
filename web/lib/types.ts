@@ -220,23 +220,32 @@ export type RecommendationStatus =
 
 export type RowStatus = "ok" | "throughput_short" | "no_price" | "slo_impossible" | "no_prediction";
 
-/** One instance serving the whole demand (recommendation.py evaluate()). */
+export type WorkloadPurpose = "online" | "offline";
+
+/** One instance running the workload (recommendation.py evaluate() /
+ * evaluate_offline()). */
 export interface RecommendationPlan {
   instance_type: string;
   operating_batch: number;
-  /** Predicted P90 of one batch (T) at the operating batch. */
+  /** Predicted P90 of one batch run (T, batch processing time; no queueing) at the operating batch. */
   latency_ms: number;
   /** Worst case incl. waiting for the previous batch: 2T. */
   wait_latency_ms: number;
   /** "pass": 2T <= SLO, "edge": T <= SLO < 2T. */
   verdict: "pass" | "edge";
-  /** Predicted throughput at the operating batch (>= demand). */
+  /** Predicted throughput at the operating batch (online: x target load >= demand). */
   operating_rps: number;
   /** Largest throughput among batches within the latency SLO. */
   capacity_rps: number;
-  utilization: number;
+  /** Online: demand / operating_rps (<= target load). */
+  load_ratio?: number;
   cost_usd_per_hour: number;
   cost_usd_per_month: number;
+  /** Offline: hourly price / throughput, per 1M requests. */
+  cost_usd_per_million?: number | null;
+  /** Offline with total_requests: hours and cost to finish. */
+  job_hours?: number | null;
+  job_cost_usd?: number | null;
   same_as_cheapest?: boolean;
 }
 
@@ -247,8 +256,14 @@ export interface RecommendationRow extends Partial<RecommendationPlan> {
   capacity_batch?: number;
   /** capacity_rps x target utilization: the most demand this instance takes. */
   max_demand_rps?: number;
-  /** P90 at capacity_batch (throughput_short rows). */
+  /** P90 at capacity_batch. */
   capacity_latency_ms?: number;
+  /** The batch the user entered and how it does on its own. */
+  input_batch?: number;
+  input_batch_latency_ms?: number | null;
+  input_batch_rps?: number | null;
+  /** Whether the entered batch alone meets the latency SLO. */
+  input_batch_latency_ok?: boolean | null;
   over_budget?: boolean;
   latency_proxy_of?: string | null;
   min_latency_ms?: number;
@@ -260,7 +275,10 @@ export interface Recommendation {
   status: RecommendationStatus;
   error?: string;
   policy?: {
+    purpose?: WorkloadPurpose;
     target_utilization: number;
+    demand_rps?: number | null;
+    total_requests?: number | null;
     wait_factor: number;
     similar_pct: number;
     hours_per_month: number;
@@ -293,9 +311,13 @@ export interface SloInput {
   latency_per_token_ms?: number | null;
   /** Which SLO-screen choice produced the numbers (display only). */
   latency_preset?: LatencyPreset | null;
-  /** Demand: the whole configuration must carry this many requests/s. */
-  min_throughput_rps: number;
-  /** Planned share of each unit's capacity, 0.5-0.9 (default 0.8). */
+  /** online (requests arrive at a rate, default) or offline (a fixed amount of work). */
+  purpose?: WorkloadPurpose;
+  /** Online demand: the one instance must carry this many requests/s. */
+  min_throughput_rps?: number | null;
+  /** Offline: how many requests the job has (optional; for time and cost to finish). */
+  total_requests?: number | null;
+  /** Target load (목표 부하율) = demand / throughput, 0.5-0.9 (default 0.8). Online only. */
   target_utilization?: number;
 }
 

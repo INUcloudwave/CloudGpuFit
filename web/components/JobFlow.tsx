@@ -8,7 +8,7 @@ import { errorMessageFor } from "@/lib/jobErrors";
 // import { formatBytesToGb } from "@/lib/format";
 import { WORKLOAD_SCHEMAS } from "@/lib/workloadSchema";
 import RecommendationView from "@/components/RecommendationView";
-import { describeLatency } from "@/lib/sloPresets";
+import { describeLatency, describeWorkload } from "@/lib/sloPresets";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -53,7 +53,7 @@ function ConditionsSummary({ payload, slo }: { payload: PredictPayload; slo: Slo
       </p>
       {slo && (
         <p className="mt-1 text-neutral-500">
-          SLO: {describeLatency(slo, payload)} · 수요 {slo.min_throughput_rps}req/s
+          SLO: {describeLatency(slo, payload)} · {describeWorkload(slo)}
         </p>
       )}
     </div>

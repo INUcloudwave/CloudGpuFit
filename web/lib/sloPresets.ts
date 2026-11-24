@@ -3,7 +3,8 @@ import type { LatencyPreset, PredictPayload, SloInput } from "@/lib/types";
 /**
  * Latency SLO presets and how an SLO is described on screen. The numbers must
  * match orchestrator/recommendation.py (LATENCY_PRESETS_MS_PER_TOKEN,
- * TARGET_UTILIZATION, TARGET_UTILIZATION_MAX).
+ * TARGET_UTILIZATION, TARGET_UTILIZATION_MAX). TARGET_UTILIZATION is shown as
+ * "목표 부하율" (demand / throughput), not GPU utilization.
  *
  * Why per output token for Generate: the predictor's latency is the whole
  * request (prefill + every generated token), so a request limit only makes
@@ -72,4 +73,15 @@ export function describeLatency(slo: SloInput, payload: PredictPayload): string 
   }
   if (slo.max_latency_ms) return `${label}요청당 ${fmt(slo.max_latency_ms)}ms 이내`;
   return "지연 제한 없음";
+}
+
+/** One line for the workload part of an SLO: the demand (online) or the
+ * amount of work (offline). */
+export function describeWorkload(slo: SloInput): string {
+  if (slo.purpose === "offline") {
+    return slo.total_requests
+      ? `오프라인 일괄 처리 · 요청 ${slo.total_requests.toLocaleString()}건`
+      : "오프라인 일괄 처리";
+  }
+  return `온라인 서빙 · 수요 ${slo.min_throughput_rps ?? "—"} req/s`;
 }

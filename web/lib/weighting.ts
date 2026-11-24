@@ -1,76 +1,101 @@
-import type { RecommendationRow } from "@/lib/types";
+import type { RecommendationRow, WorkloadPurpose } from "@/lib/types";
 
 /**
- * User-weighted ordering of the instances that already pass both SLOs (and
- * the budget). SLOs and budget stay hard conditions in
+ * User-weighted ordering of the instances that already pass the SLOs (and the
+ * budget). SLOs and budget stay hard conditions in
  * orchestrator/recommendation.py; this only re-orders the passing rows, so no
  * weighting can recommend an instance that misses an SLO.
  *
- * Criteria (single instance):
- *  - cost: hourly price
- *  - latency: P90 at the operating batch (T)
- *  - throughput: NOT a criterion. Every passing instance carries the
- *    throughput SLO within the target utilization (80%), so all are treated
- *    as equally satisfying it (decided 2026-11-23).
+ * Two criteria per purpose:
+ *  - online : cost = hourly price, other = latency T (P90 of one batch run at
+ *             the operating batch). Throughput is not a criterion: every
+ *             passing instance carries the demand within the target load.
+ *  - offline: cost = cost per request (hourly price / throughput), other =
+ *             time per request (1 / throughput at the operating batch).
  *
  * Each value becomes "x times the best passing value" (1 = best, 1.3 = 30%
  * worse) instead of a 0-1 min-max score: it keeps a meaning, never gives the
- * best-in-one-criterion instance a zero, and reads as "+30% cost" on screen.
- * score = w_cost x cost ratio + w_latency x latency ratio; lowest wins.
+ * best-in-one-criterion instance a zero, and reads as "+30%" on screen.
+ *
+ * score = w x cost ratio + (1 - w) x other ratio, w in [0, 1]; lowest wins.
+ * Only the order is shown, so the weights need no normalising.
  */
 
 export type WeightPreset = "cost" | "speed" | "balanced";
 
-export interface Weights {
-  cost: number;
-  latency: number;
+/** Share of the cost criterion for each preset button. */
+export const PRESET_COST_WEIGHT: Record<WeightPreset, number> = {
+  cost: 1,
+  speed: 0,
+  balanced: 0.5,
+};
+
+export function presetLabel(preset: WeightPreset, purpose: WorkloadPurpose): string {
+  if (preset === "cost") return "비용 중시";
+  if (preset === "balanced") return "균형";
+  return purpose === "offline" ? "처리량 중시" : "속도 중시";
 }
 
-export const PRESET_WEIGHTS: Record<WeightPreset, Weights> = {
-  cost: { cost: 1, latency: 0 },
-  speed: { cost: 0, latency: 1 },
-  balanced: { cost: 0.5, latency: 0.5 },
-};
+/** Names of the two criteria, for the slider and the ratio column. */
+export function criteriaLabels(purpose: WorkloadPurpose): { cost: string; other: string } {
+  return purpose === "offline" ? { cost: "요청당 비용", other: "처리 시간" } : { cost: "요금", other: "지연" };
+}
 
-export const PRESET_LABEL: Record<WeightPreset, string> = {
-  cost: "비용 중시",
-  speed: "속도 중시",
-  balanced: "균형",
-};
+/** The preset a cost weight equals, or null for a fine-tuned weight. */
+export function presetOf(costWeight: number): WeightPreset | null {
+  const hit = (Object.keys(PRESET_COST_WEIGHT) as WeightPreset[]).find(
+    (p) => Math.abs(PRESET_COST_WEIGHT[p] - costWeight) < 1e-9
+  );
+  return hit ?? null;
+}
 
 export interface ScoredRow {
   row: RecommendationRow;
   costRatio: number;
-  latencyRatio: number;
+  otherRatio: number;
   score: number;
+}
+
+/** The two raw values a row is compared on (smaller is better for both). */
+export function criteriaValues(
+  row: RecommendationRow,
+  purpose: WorkloadPurpose
+): { cost: number; other: number } | null {
+  if (purpose === "offline") {
+    if (row.cost_usd_per_million == null || row.operating_rps == null || row.operating_rps <= 0) return null;
+    return { cost: row.cost_usd_per_million, other: 1 / row.operating_rps };
+  }
+  if (row.cost_usd_per_hour == null || row.latency_ms == null) return null;
+  return { cost: row.cost_usd_per_hour, other: row.latency_ms };
 }
 
 /** Passing rows within budget (or, when none fits the budget, all passing
  * rows -- same pool the backend uses for the cheapest plan), best first. */
-export function scoreRows(rows: RecommendationRow[], weights: Weights): ScoredRow[] {
-  const ok = rows.filter(
-    (r) => r.status === "ok" && r.cost_usd_per_hour != null && r.latency_ms != null
-  );
-  const inBudget = ok.filter((r) => !r.over_budget);
+export function scoreRows(rows: RecommendationRow[], costWeight: number, purpose: WorkloadPurpose): ScoredRow[] {
+  const w = Math.min(1, Math.max(0, costWeight));
+  const ok = rows
+    .filter((r) => r.status === "ok")
+    .map((row) => ({ row, v: criteriaValues(row, purpose) }))
+    .filter((x): x is { row: RecommendationRow; v: { cost: number; other: number } } => x.v !== null);
+  const inBudget = ok.filter((x) => !x.row.over_budget);
   const pool = inBudget.length > 0 ? inBudget : ok;
   if (pool.length === 0) return [];
-  const bestCost = Math.min(...pool.map((r) => r.cost_usd_per_hour!));
-  const bestLatency = Math.min(...pool.map((r) => r.latency_ms!));
-  const total = weights.cost + weights.latency || 1;
+  const bestCost = Math.min(...pool.map((x) => x.v.cost));
+  const bestOther = Math.min(...pool.map((x) => x.v.other));
   return pool
-    .map((row) => {
-      const costRatio = row.cost_usd_per_hour! / bestCost;
-      const latencyRatio = row.latency_ms! / bestLatency;
-      const score = (weights.cost * costRatio + weights.latency * latencyRatio) / total;
-      return { row, costRatio, latencyRatio, score };
+    .map(({ row, v }) => {
+      const costRatio = v.cost / bestCost;
+      const otherRatio = v.other / bestOther;
+      return { row, costRatio, otherRatio, score: w * costRatio + (1 - w) * otherRatio, v };
     })
     .sort(
       (a, b) =>
         a.score - b.score ||
-        a.row.cost_usd_per_hour! - b.row.cost_usd_per_hour! ||
-        a.row.latency_ms! - b.row.latency_ms! ||
+        a.v.cost - b.v.cost ||
+        a.v.other - b.v.other ||
         a.row.instance_type.localeCompare(b.row.instance_type)
-    );
+    )
+    .map(({ row, costRatio, otherRatio, score }) => ({ row, costRatio, otherRatio, score }));
 }
 
 /** "+30%" / "-40%" / "같음" for a pick compared with another row. */

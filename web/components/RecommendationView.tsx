@@ -7,20 +7,33 @@ import type {
   RecommendationPlan,
   RecommendationRow,
   SloInput,
+  WorkloadPurpose,
 } from "@/lib/types";
-import { PRESET_LABEL, PRESET_WEIGHTS, relative, scoreRows, type ScoredRow, type WeightPreset } from "@/lib/weighting";
+import {
+  PRESET_COST_WEIGHT,
+  criteriaLabels,
+  criteriaValues,
+  presetLabel,
+  presetOf,
+  relative,
+  scoreRows,
+  type ScoredRow,
+  type WeightPreset,
+} from "@/lib/weighting";
 import {
   DEFAULT_TARGET_UTILIZATION,
   MAX_TARGET_UTILIZATION,
   MIN_TARGET_UTILIZATION,
   describeLatency,
+  describeWorkload,
 } from "@/lib/sloPresets";
 
 /**
- * Result screen for orchestrator/recommendation.py: one instance type x N
- * One instance. The backend computes everything (operating batch, verdict,
- * cost); this component only formats it. Changing the target utilization
- * re-submits the SLO and the backend recomputes on read -- no new prediction.
+ * Result screen for orchestrator/recommendation.py: ONE instance. The backend
+ * computes everything (operating batch, latency, cost); this component only
+ * formats it and orders the passing instances by the user's weights.
+ * Changing the target load re-submits the SLO and the backend recomputes on
+ * read -- no new prediction. Moving the weights is local and instant.
  */
 
 type CostUnit = "hour" | "month";
@@ -51,23 +64,10 @@ function pct(value: number | null | undefined): string {
   return `${Math.round(value * 100)}%`;
 }
 
-const VERDICT_STYLE = {
-  pass: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
-  edge: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
-} as const;
-
-const VERDICT_LABEL = {
-  pass: "대기 포함 충족",
-  edge: "대기 시 초과 가능",
-} as const;
-
-function VerdictBadge({ verdict }: { verdict?: "pass" | "edge" }) {
-  if (!verdict) return <span className="text-neutral-400">—</span>;
-  return (
-    <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${VERDICT_STYLE[verdict]}`}>
-      {VERDICT_LABEL[verdict]}
-    </span>
-  );
+function hours(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  if (value < 1) return `${Math.round(value * 60)}분`;
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}시간`;
 }
 
 const ROW_STATUS_LABEL: Record<string, string> = {
@@ -77,33 +77,54 @@ const ROW_STATUS_LABEL: Record<string, string> = {
   no_prediction: "예측 실패",
 };
 
+/** "배치 128: 14,790 ms · 9.9 req/s · 지연 SLO 충족" -- the user's own batch. */
+function InputBatchNote({ row, compact }: { row: RecommendationRow; compact?: boolean }) {
+  if (row.input_batch === undefined) return null;
+  if (row.input_batch_latency_ms == null) {
+    return <span className="text-neutral-400">배치 {row.input_batch}: 예측 없음</span>;
+  }
+  const ok = row.input_batch_latency_ok;
+  return (
+    <span>
+      {!compact && <>배치 {row.input_batch}: </>}
+      {ms(row.input_batch_latency_ms)} · {rps(row.input_batch_rps)}{" "}
+      <span className={ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>
+        {ok ? "지연 SLO 충족" : "지연 SLO 초과"}
+      </span>
+    </span>
+  );
+}
+
 function PlanCard({
   title,
   subtitle,
   plan,
+  purpose,
   costUnit,
   maxLatencyMs,
   tokens,
   demand,
   target,
+  totalRequests,
   highlight,
 }: {
   title: string;
   subtitle: string;
-  plan: RecommendationPlan;
+  plan: RecommendationRow;
+  purpose: WorkloadPurpose;
   costUnit: CostUnit;
   maxLatencyMs: number | null;
   tokens: number | null;
-  demand: number;
+  demand: number | null;
   target: number;
+  totalRequests: number | null;
   highlight?: boolean;
 }) {
+  const offline = purpose === "offline";
   return (
     <div
       className={`rounded-xl border p-5 ${
-        highlight
-          ? "border-neutral-900 dark:border-white"
-          : "border-neutral-200 dark:border-neutral-700"
+        highlight ? "border-neutral-900 dark:border-white" : "border-neutral-200 dark:border-neutral-700"
       }`}
     >
       <p className="text-xs font-medium text-neutral-500">{title}</p>
@@ -112,32 +133,61 @@ function PlanCard({
       </p>
       <p className="mt-0.5 text-xs text-neutral-500">{subtitle}</p>
       <p className="mt-3 font-mono text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-        {costText(plan, costUnit)}
+        {offline ? `${money(plan.cost_usd_per_million)} /100만 건` : costText(plan, costUnit)}
       </p>
+      {offline && <p className="font-mono text-xs text-neutral-500">{costText(plan, costUnit)}</p>}
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-neutral-500">운영 배치</dt>
-        <dd className="font-mono">{plan.operating_batch}</dd>
-        <dt className="text-neutral-500">배치 1회 지연 (P90)</dt>
+        <dd className="font-mono">
+          {plan.operating_batch}
+          <span className="block font-sans text-xs text-neutral-400">
+            {offline ? "지연 SLO 안에서 처리량이 가장 큰 배치" : "요청량을 감당하는 가장 작은 배치"}
+          </span>
+        </dd>
+        <dt className="text-neutral-500">배치 1회 처리 시간 P90 (T)</dt>
         <dd className="font-mono">
           {ms(plan.latency_ms)}
           {maxLatencyMs !== null && <span className="text-neutral-400"> / {ms(maxLatencyMs)}</span>}
-          {tokens !== null && (
+          {tokens !== null && plan.latency_ms != null && (
             <span className="block text-xs text-neutral-400">토큰당 약 {ms(plan.latency_ms / tokens)}</span>
           )}
         </dd>
-        <dt className="text-neutral-500">대기 포함 최악 (2T)</dt>
-        <dd className="flex flex-wrap items-center gap-2 font-mono">
-          {ms(plan.wait_latency_ms)} <VerdictBadge verdict={plan.verdict} />
+        {offline ? (
+          <>
+            <dt className="text-neutral-500">처리량</dt>
+            <dd className="font-mono">{rps(plan.operating_rps)}</dd>
+            <dt className="text-neutral-500">완료 예상{totalRequests ? ` (${totalRequests.toLocaleString()}건)` : ""}</dt>
+            <dd className="font-mono">
+              {totalRequests ? (
+                <>
+                  {hours(plan.job_hours)}
+                  <span className="block text-xs text-neutral-400">비용 {money(plan.job_cost_usd, 2)}</span>
+                </>
+              ) : (
+                <span className="font-sans text-xs text-neutral-400">요청 수를 입력하면 계산</span>
+              )}
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt className="text-neutral-500">운영 배치 처리량</dt>
+            <dd className="font-mono">
+              {rps(plan.operating_rps)}
+              <span className="block text-xs text-neutral-400">
+                수요 {rps(demand)} → 부하율 {pct(plan.load_ratio)} (목표 {Math.round(target * 100)}% 이하)
+              </span>
+            </dd>
+            <dt className="text-neutral-500">최대 처리량</dt>
+            <dd className="font-mono">
+              {rps(plan.capacity_rps)}
+              <span className="block text-xs text-neutral-400">배치 {plan.capacity_batch} 기준 · 지연 SLO 안에서</span>
+            </dd>
+          </>
+        )}
+        <dt className="text-neutral-500">입력한 배치</dt>
+        <dd className="font-mono text-xs">
+          <InputBatchNote row={plan} />
         </dd>
-        <dt className="text-neutral-500">처리량 SLO</dt>
-        <dd className="font-mono">
-          수요 {rps(demand)} ≤ {rps(plan.capacity_rps * target)}
-          <span className="block text-xs text-neutral-400">
-            최대 {rps(plan.capacity_rps)}의 {Math.round(target * 100)}%
-          </span>
-        </dd>
-        <dt className="text-neutral-500">사용률</dt>
-        <dd className="font-mono">{pct(plan.utilization)}</dd>
       </dl>
     </div>
   );
@@ -178,56 +228,61 @@ function StatusNote({ rec }: { rec: Recommendation }) {
 
 function RowsTable({
   rows,
-  cheapest,
+  pickName,
   similar,
+  purpose,
   costUnit,
   scored,
+  inputBatch,
 }: {
   rows: RecommendationRow[];
-  cheapest: string | null | undefined;
+  pickName: string | null | undefined;
   similar: string[];
+  purpose: WorkloadPurpose;
   costUnit: CostUnit;
   scored: ScoredRow[];
+  inputBatch: number;
 }) {
   // Passing rows in the user's weighted order first, then the rest as the
   // backend ordered them.
   const ratios = new Map(scored.map((s) => [s.row.instance_type, s]));
   const ordered = [...scored.map((s) => s.row), ...rows.filter((r) => !ratios.has(r.instance_type))];
+  const offline = purpose === "offline";
+  const labels = criteriaLabels(purpose);
+  const cols = offline
+    ? ["인스턴스", "운영 배치", "T (운영 배치)", "처리량 (운영 배치)", "요청 100만 건당", "완료 예상", `입력 배치 ${inputBatch}`, "시간당 요금", `최저 대비 (${labels.cost} / ${labels.other})`]
+    : ["인스턴스", "운영 배치", "T (운영 배치)", "처리량 · 부하율 (운영 배치)", "최대 처리량 (기준 배치)", `입력 배치 ${inputBatch}`, "비용", `최저 대비 (${labels.cost} / ${labels.other})`];
   return (
     <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
       <div className="border-b border-neutral-200 px-5 py-4 dark:border-neutral-700">
         <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">전체 후보</h3>
         <p className="mt-0.5 text-xs text-neutral-500">
-          인스턴스마다 지연 SLO 안에서 낼 수 있는 최대 처리량과, 요청량을 감당하는 가장 작은 운영 배치를 계산했습니다.
+          ‘운영 배치’ 열들은 시스템이 고른 운영 배치 기준이고, ‘최대 처리량’은 지연 SLO 안에서 처리량이 가장 큰
+          배치 기준, ‘입력 배치’는 입력하신 배치 그대로 돌렸을 때의 예측입니다.
         </p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-neutral-50 text-left text-xs text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
             <tr>
-              <th className="px-4 py-3">인스턴스</th>
-              <th className="px-4 py-3">최대 감당 요청량</th>
-              <th className="px-4 py-3">운영 배치</th>
-              <th className="px-4 py-3">지연 P90 (T)</th>
-              <th className="px-4 py-3">대기 포함 (2T)</th>
-              <th className="px-4 py-3">사용률</th>
-              <th className="px-4 py-3">비용</th>
-              <th className="px-4 py-3">최저 대비 (요금 / 지연)</th>
+              {cols.map((c) => (
+                <th key={c} className="px-4 py-3">
+                  {c}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {ordered.map((r) => {
-              const isCheapest = r.instance_type === cheapest;
+              const isPick = r.instance_type === pickName;
               const isSimilar = similar.includes(r.instance_type);
+              const s = ratios.get(r.instance_type);
               return (
-                <tr
-                  key={r.instance_type}
-                  className={r.status !== "ok" || r.over_budget ? "text-neutral-400" : undefined}
-                >
+                <tr key={r.instance_type} className={r.status !== "ok" || r.over_budget ? "text-neutral-400" : undefined}>
                   <td className="px-4 py-3 font-mono">
                     <div className="flex flex-wrap items-center gap-1.5">
                       {r.instance_type}
-                      {isCheapest && (
+                      {isPick && (
                         <span className="rounded-full bg-neutral-900 px-2 py-0.5 font-sans text-[11px] text-white dark:bg-white dark:text-neutral-900">
                           추천
                         </span>
@@ -244,33 +299,41 @@ function RowsTable({
                       )}
                     </div>
                     {r.latency_proxy_of && (
-                      <p className="mt-0.5 font-sans text-[11px] text-neutral-400">
-                        같은 GPU {r.latency_proxy_of} 예측값 사용
-                      </p>
+                      <p className="mt-0.5 font-sans text-[11px] text-neutral-400">같은 GPU {r.latency_proxy_of} 예측값 사용</p>
                     )}
                   </td>
                   {r.status === "ok" ? (
                     <>
-                      <td className="px-4 py-3 font-mono">{rps(r.max_demand_rps)}</td>
                       <td className="px-4 py-3 font-mono">{r.operating_batch}</td>
                       <td className="px-4 py-3 font-mono">{ms(r.latency_ms)}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-2 font-mono">
-                          {ms(r.wait_latency_ms)} <VerdictBadge verdict={r.verdict} />
-                        </div>
+                      {offline ? (
+                        <>
+                          <td className="px-4 py-3 font-mono">{rps(r.operating_rps)}</td>
+                          <td className="px-4 py-3 font-mono">{money(r.cost_usd_per_million)}</td>
+                          <td className="px-4 py-3 font-mono">
+                            {r.job_hours != null ? `${hours(r.job_hours)} · ${money(r.job_cost_usd, 2)}` : "—"}
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-4 py-3 font-mono">
+                            {rps(r.operating_rps)} · {pct(r.load_ratio)}
+                          </td>
+                          <td className="px-4 py-3 font-mono">
+                            {rps(r.capacity_rps)} <span className="text-xs text-neutral-400">(배치 {r.capacity_batch})</span>
+                          </td>
+                        </>
+                      )}
+                      <td className="px-4 py-3 font-mono text-xs">
+                        <InputBatchNote row={r} compact />
                       </td>
-                      <td className="px-4 py-3 font-mono">{pct(r.utilization)}</td>
                       <td className="px-4 py-3 font-mono">{costText(r, costUnit)}</td>
                       <td className="px-4 py-3 font-mono text-xs">
-                        {ratios.has(r.instance_type)
-                          ? `×${ratios.get(r.instance_type)!.costRatio.toFixed(2)} / ×${ratios
-                              .get(r.instance_type)!
-                              .latencyRatio.toFixed(2)}`
-                          : "—"}
+                        {s ? `×${s.costRatio.toFixed(2)} / ×${s.otherRatio.toFixed(2)}` : "—"}
                       </td>
                     </>
                   ) : (
-                    <td className="px-4 py-3 text-xs" colSpan={7}>
+                    <td className="px-4 py-3 text-xs" colSpan={cols.length - 1}>
                       {ROW_STATUS_LABEL[r.status] ?? r.status}
                       {r.status === "slo_impossible" && r.min_latency_ms !== undefined && (
                         <> — 최소 지연 {ms(r.min_latency_ms)} (배치 {r.min_latency_batch})</>
@@ -278,9 +341,14 @@ function RowsTable({
                       {r.status === "no_prediction" && r.reason && <> — {r.reason}</>}
                       {r.status === "throughput_short" && (
                         <>
-                          {" "}— 최대 감당 요청량 {rps(r.max_demand_rps)} (배치 {r.capacity_batch}, 지연{" "}
-                          {ms(r.capacity_latency_ms)}) · {costText(r, costUnit)}
+                          {" "}— 최대 감당 요청량 {rps(r.max_demand_rps)} (배치 {r.capacity_batch} 처리량{" "}
+                          {rps(r.capacity_rps)}의 목표 부하율, 지연 {ms(r.capacity_latency_ms)}) · {costText(r, costUnit)}
                         </>
+                      )}
+                      {r.input_batch !== undefined && r.status !== "no_prediction" && (
+                        <span className="block">
+                          입력 배치 — <InputBatchNote row={r} />
+                        </span>
                       )}
                     </td>
                   )}
@@ -305,8 +373,13 @@ export default function RecommendationView({
 }) {
   const rec = job.result?.recommendation;
   const slo = job.slo;
+  const purpose: WorkloadPurpose = rec?.policy?.purpose ?? slo?.purpose ?? "online";
+  const offline = purpose === "offline";
+  const labels = criteriaLabels(purpose);
   const [costUnit, setCostUnit] = useState<CostUnit>("hour");
-  const [preset, setPreset] = useState<WeightPreset>("cost");
+  // Weight of the cost criterion (0-1); the other criterion gets 1 - this.
+  const [costWeight, setCostWeight] = useState(PRESET_COST_WEIGHT.cost);
+  const activePreset = presetOf(costWeight);
   const appliedTarget = Math.min(
     slo?.target_utilization ?? rec?.policy?.target_utilization ?? DEFAULT_TARGET_UTILIZATION,
     MAX_TARGET_UTILIZATION
@@ -314,6 +387,8 @@ export default function RecommendationView({
   const limit = rec?.latency_limit ?? null;
   const maxLatencyMs = limit?.max_latency_ms ?? null;
   const tokens = limit?.basis === "per_token" ? limit.tokens : null;
+  const demand = slo?.min_throughput_rps ?? null;
+  const totalRequests = slo?.total_requests ?? null;
   const [draftTarget, setDraftTarget] = useState(Math.round(appliedTarget * 100));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -330,7 +405,7 @@ export default function RecommendationView({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        setSaveError("목표 사용률을 저장하지 못했습니다.");
+        setSaveError("목표 부하율을 저장하지 못했습니다.");
         return;
       }
       onJobUpdate((await res.json()) as JobResponse);
@@ -341,15 +416,30 @@ export default function RecommendationView({
     }
   }
 
-  const cheapestRow = rec?.rows.find((r) => r.instance_type === rec.cheapest && r.status === "ok");
-  const scored = rec ? scoreRows(rec.rows, PRESET_WEIGHTS[preset]) : [];
+  const rows = rec?.rows ?? [];
+  const scored = scoreRows(rows, costWeight, purpose);
   const pick = scored[0] ?? null;
-  // Second card: the other end, so the user sees the trade-off.
-  const compare =
-    preset === "cost"
-      ? scoreRows(rec?.rows ?? [], PRESET_WEIGHTS.speed)[0] ?? null
-      : scored.find((x) => x.row.instance_type === cheapestRow?.instance_type) ?? null;
+  // Second card: the best on the criterion the user weighs less, so the
+  // trade-off stays visible.
+  const compare = scoreRows(rows, costWeight >= 0.5 ? 0 : 1, purpose)[0] ?? null;
+  const compareTitle = costWeight >= 0.5 ? `비교 — ${presetLabel("speed", purpose)}라면` : "비교 — 비용 중시라면";
   const budget = job.payload.deployment.budget_usd_per_hour;
+  const inputBatch = job.payload.batch_size;
+
+  function pickSubtitle(): string {
+    const sloText = offline ? "지연 SLO를 만족하는 인스턴스 중" : "지연·처리량 SLO를 모두 만족하는 인스턴스 중";
+    if (activePreset === "cost") return `${sloText} ${offline ? "요청당 비용이 가장 낮습니다" : "가장 저렴합니다"}.`;
+    if (activePreset === "speed") return `${sloText} ${offline ? "처리량이 가장 큽니다" : "지연이 가장 짧습니다"}.`;
+    return `${labels.cost} ${Math.round(costWeight * 100)} : ${labels.other} ${Math.round(
+      (1 - costWeight) * 100
+    )} 비중으로 본 최저 대비 배수의 가중합이 가장 작은 인스턴스입니다.`;
+  }
+
+  function compareSubtitle(c: ScoredRow, p: ScoredRow): string {
+    const cv = criteriaValues(c.row, purpose)!;
+    const pv = criteriaValues(p.row, purpose)!;
+    return `추천 대비 ${labels.cost} ${relative(cv.cost, pv.cost)}, ${labels.other} ${relative(cv.other, pv.other)}`;
+  }
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
@@ -357,21 +447,22 @@ export default function RecommendationView({
         <div>
           <h2 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">GPU 인스턴스 추천 결과</h2>
           <p className="mt-1 text-sm text-neutral-500">
-            AI 워크로드를 인스턴스 한 대에 올린다는 가정에서, 지연·처리량 SLO를 모두 만족하는 가장 저렴한 인스턴스를
-            추천합니다.
+            {offline
+              ? "오프라인 일괄 처리: 인스턴스 한 대로 작업을 돌린다는 가정에서, 지연 SLO 안에서 요청당 비용이 낮은 인스턴스를 추천합니다."
+              : "온라인 서빙: 인스턴스 한 대에 올린다는 가정에서, 지연·처리량 SLO를 모두 만족하는 인스턴스를 추천합니다."}
           </p>
           <dl className="mt-3 space-y-1 text-sm text-neutral-600 dark:text-neutral-400">
             <div className="flex gap-2">
               <dt className="font-medium text-neutral-700 dark:text-neutral-300">모델</dt>
               <dd className="font-mono">
-                {job.payload.model} · 최대 배치 {job.payload.batch_size}
+                {job.payload.model} · 입력 배치(상한) {inputBatch}
               </dd>
             </div>
             {slo && (
               <div className="flex gap-2">
                 <dt className="font-medium text-neutral-700 dark:text-neutral-300">SLO</dt>
                 <dd>
-                  {describeLatency(slo, job.payload)} · 수요 {slo.min_throughput_rps} req/s
+                  {describeLatency(slo, job.payload)} · {describeWorkload(slo)}
                 </dd>
               </div>
             )}
@@ -403,10 +494,10 @@ export default function RecommendationView({
             ))}
           </div>
 
-          {slo && (
-            <div className="w-64 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+          {slo && !offline && (
+            <div className="w-72 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
               <div className="flex items-baseline justify-between">
-                <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">목표 사용률</p>
+                <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">목표 부하율</p>
                 <span className="font-mono text-sm font-semibold">{draftTarget}%</span>
               </div>
               <input
@@ -419,9 +510,9 @@ export default function RecommendationView({
                 className="mt-1 w-full accent-neutral-800 dark:accent-white"
               />
               <p className="text-[11px] leading-snug text-neutral-400">
-                대당 최대 처리량의 몇 %까지 쓸지입니다(기본 80%, 최대 90%). 사용률이 오를수록 요청이 줄을 서는
-                시간이 급격히 늘어 80%에서 처리 시간의 약 4배, 90%에서 약 9배가 됩니다. 예측이 실측보다 10~20%
-                빠르게 나오는 GPU도 있어 여유를 둡니다.
+                요청량 ÷ 운영 배치 처리량의 상한입니다(GPU 사용률과는 다른 값). 기본 80%, 최대 90%. 예측이 실측보다
+                10~20% 빠르게 나오는 GPU가 있고 요청량은 순간적으로 평균을 넘으므로 여유를 둡니다. 낮추면 더 큰
+                운영 배치가 필요해 T가 길어질 수 있습니다.
               </p>
               <button
                 type="button"
@@ -445,71 +536,105 @@ export default function RecommendationView({
         <>
           <StatusNote rec={rec} />
 
+          {rec.rows.length > 0 && (
+            <p className="rounded-lg bg-neutral-50 px-4 py-3 text-xs leading-relaxed text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400">
+              <b>운영 배치 기준으로 보여 드립니다.</b> 입력하신 배치 {inputBatch}는 VRAM을 확인한 상한이고, 실제로는{" "}
+              {offline
+                ? "그 아래에서 지연 SLO를 넘지 않는 가장 처리량이 큰 배치(입력 배치부터 한 단계씩 내려가며 확인)"
+                : "그 아래에서 요청량을 목표 부하율 안에서 감당하는 가장 작은 배치(작을수록 배치 1회 처리 시간이 짧음)"}
+              로 운영한다고 보고 지연·처리량·비용을 계산했습니다. 입력하신 배치를 그대로 쓸 때의 결과는 각 카드와 표의
+              ‘입력 배치’에 있습니다.
+            </p>
+          )}
+
           {pick && slo && (
             <>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium text-neutral-500">무엇을 중시하나요?</span>
-                {(["cost", "speed", "balanced"] as const).map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => setPreset(p)}
-                    className={`rounded-full border px-3 py-1 text-xs font-medium ${
-                      preset === p
-                        ? "border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-900"
-                        : "border-neutral-300 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400"
-                    }`}
-                  >
-                    {PRESET_LABEL[p]}
-                  </button>
-                ))}
-                <span className="text-[11px] text-neutral-400">
-                  SLO를 모두 만족하는 인스턴스 안에서만 순서를 바꿉니다. 처리량은 SLO를 통과하면 모두 같게 봅니다.
-                </span>
+              <div className="space-y-2 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-neutral-500">무엇을 중시하나요?</span>
+                  {(["cost", "speed", "balanced"] as const).map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setCostWeight(PRESET_COST_WEIGHT[p as WeightPreset])}
+                      className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                        activePreset === p
+                          ? "border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-900"
+                          : "border-neutral-300 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400"
+                      }`}
+                    >
+                      {presetLabel(p, purpose)}
+                    </button>
+                  ))}
+                  {activePreset === null && (
+                    <span className="rounded-full border border-dashed border-neutral-400 px-3 py-1 text-xs text-neutral-500">
+                      직접 조정
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 text-xs text-neutral-500">
+                  <span className="w-28 text-right">
+                    {labels.cost} {Math.round(costWeight * 100)}%
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={Math.round((1 - costWeight) * 100)}
+                    onChange={(e) => setCostWeight(1 - Number(e.target.value) / 100)}
+                    className="flex-1 accent-neutral-800 dark:accent-white"
+                    aria-label={`${labels.cost}과 ${labels.other}의 비중`}
+                  />
+                  <span className="w-28">
+                    {labels.other} {Math.round((1 - costWeight) * 100)}%
+                  </span>
+                </div>
+                <p className="text-[11px] text-neutral-400">
+                  SLO를 모두 만족하는 인스턴스 안에서만 순서를 바꿉니다. 점수 = {labels.cost} 비중 × (최저 대비 배수) +{" "}
+                  {labels.other} 비중 × (최저 대비 배수), 낮을수록 위.
+                  {offline
+                    ? " 처리 시간은 요청 1건당 시간(1 ÷ 처리량)입니다."
+                    : " 처리량은 SLO를 통과하면 모두 같게 봅니다(목표 부하율 안에서 요청량을 감당)."}
+                </p>
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <PlanCard
                   title={
                     rec.status === "over_budget"
-                      ? `${PRESET_LABEL[preset]} (예산 초과)`
-                      : `추천 — ${PRESET_LABEL[preset]}`
+                      ? `${activePreset ? presetLabel(activePreset, purpose) : "직접 조정"} (예산 초과)`
+                      : `추천 — ${activePreset ? presetLabel(activePreset, purpose) : "직접 조정"}`
                   }
-                  subtitle={
-                    preset === "cost"
-                      ? "지연·처리량 SLO를 모두 만족하는 인스턴스 중 가장 저렴합니다."
-                      : preset === "speed"
-                        ? "지연·처리량 SLO를 모두 만족하는 인스턴스 중 지연이 가장 짧습니다."
-                        : "요금과 지연을 같은 비중으로 보고, 최저 대비 배수의 평균이 가장 작은 인스턴스입니다."
-                  }
-                  plan={pick.row as RecommendationPlan}
+                  subtitle={pickSubtitle()}
+                  plan={pick.row}
+                  purpose={purpose}
                   costUnit={costUnit}
                   maxLatencyMs={maxLatencyMs}
                   tokens={tokens}
-                  demand={slo.min_throughput_rps}
+                  demand={demand}
                   target={appliedTarget}
+                  totalRequests={totalRequests}
                   highlight
                 />
                 {compare && compare.row.instance_type !== pick.row.instance_type ? (
-                  <div className="space-y-2">
-                    <PlanCard
-                      title={preset === "cost" ? "비교 — 속도 중시라면" : "비교 — 비용 중시라면"}
-                      subtitle={`추천 대비 요금 ${relative(
-                        compare.row.cost_usd_per_hour!,
-                        pick.row.cost_usd_per_hour!
-                      )}, 지연 ${relative(compare.row.latency_ms!, pick.row.latency_ms!)}`}
-                      plan={compare.row as RecommendationPlan}
-                      costUnit={costUnit}
-                      maxLatencyMs={maxLatencyMs}
-                      tokens={tokens}
-                      demand={slo.min_throughput_rps}
-                      target={appliedTarget}
-                    />
-                  </div>
+                  <PlanCard
+                    title={compareTitle}
+                    subtitle={compareSubtitle(compare, pick)}
+                    plan={compare.row}
+                    purpose={purpose}
+                    costUnit={costUnit}
+                    maxLatencyMs={maxLatencyMs}
+                    tokens={tokens}
+                    demand={demand}
+                    target={appliedTarget}
+                    totalRequests={totalRequests}
+                  />
                 ) : (
                   <div className="rounded-xl border border-dashed border-neutral-200 p-5 text-sm text-neutral-500 dark:border-neutral-700">
                     <p className="text-xs font-medium">비교</p>
                     <p className="mt-2">
-                      가장 싼 인스턴스가 지연도 가장 짧아, 어느 기준으로 봐도 같은 인스턴스가 추천됩니다.
+                      {labels.cost}과 {labels.other} 모두 같은 인스턴스가 가장 좋아, 어느 비중으로 봐도 같은 인스턴스가
+                      추천됩니다.
                     </p>
                   </div>
                 )}
@@ -524,9 +649,9 @@ export default function RecommendationView({
             </p>
           )}
 
-          {rec.similar && rec.similar.length > 0 && (
+          {costWeight === 1 && rec.similar && rec.similar.length > 0 && (
             <p className="text-sm text-neutral-500">
-              비용 차이 {rec.policy?.similar_pct ?? 10}% 이내의 다른 선택지:{" "}
+              {offline ? "요청당 비용" : "비용"} 차이 {rec.policy?.similar_pct ?? 10}% 이내의 다른 선택지:{" "}
               <span className="font-mono">{rec.similar.join(", ")}</span>
             </p>
           )}
@@ -534,19 +659,23 @@ export default function RecommendationView({
           {rec.rows.length > 0 && (
             <RowsTable
               rows={rec.rows}
-              cheapest={pick?.row.instance_type ?? rec.cheapest}
-              similar={preset === "cost" ? rec.similar ?? [] : []}
+              pickName={pick?.row.instance_type ?? rec.cheapest}
+              similar={costWeight === 1 ? rec.similar ?? [] : []}
+              purpose={purpose}
               costUnit={costUnit}
               scored={scored}
+              inputBatch={inputBatch}
             />
           )}
 
           <p className="text-xs leading-relaxed text-neutral-400">
-            지연은 예측기의 P90(보수적 추정)으로 판정합니다. 생성형 모델의 지연은 입력 처리부터 마지막 토큰까지
-            요청 전체 시간이며, 토큰당 기준(실시간 50ms, 일반 100ms)은 LLM 서빙 연구에서 대화형 서비스에 쓰는 토큰
-            간 지연(TPOT) 범위를 따랐습니다. 대기 포함(2T)은 앞 배치가 끝나기를 기다린 요청의
-            최악 지연으로, ‘대기 시 초과 가능’은 배치 1회는 SLO 안이지만 대기까지 더하면 넘을 수 있다는 뜻입니다.
-            처리량 SLO는 인스턴스 한 대가 최대 처리량의 목표 사용률(기본 80%) 안에서 요청량을 감당하는지로 판정합니다. 월 비용은 시간당 × 720시간입니다.
+            지연 SLO는 T로 판정합니다. T는 예측기가 낸 배치 1회 처리 시간의 P90(보수적 추정)이며, 요청이 줄을 서거나
+            배치가 차기를 기다리는 시간은 포함하지 않습니다. 생성형 모델의 T는 입력 처리부터 마지막 토큰까지 요청 전체 시간이며, 토큰당 기준(실시간
+            50ms, 일반 100ms)은 LLM 서빙 연구에서 대화형 서비스에 쓰는 토큰 간 지연(TPOT) 범위를 따랐습니다.
+            {offline
+              ? " 요청당 비용은 시간당 요금 ÷ 처리량이고, 완료 예상은 요청 수 ÷ 처리량입니다."
+              : " 처리량 SLO는 인스턴스 한 대가 요청량을 운영 배치 처리량의 목표 부하율(기본 80%) 안에서 감당하는지로 판정합니다."}{" "}
+            월 비용은 시간당 × 720시간입니다.
           </p>
         </>
       )}

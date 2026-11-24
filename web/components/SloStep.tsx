@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { CreateJobResponse, LatencyPreset, PredictPayload, SloInput } from "@/lib/types";
+import type { CreateJobResponse, LatencyPreset, PredictPayload, SloInput, WorkloadPurpose } from "@/lib/types";
 import { GENERATE_LATENCY_PRESETS, generatedTokens } from "@/lib/sloPresets";
 
 interface Props {
@@ -163,14 +163,18 @@ function ThroughputHelper({ onApply }: { onApply: (rps: number) => void }) {
  * background); the recommendation is computed from them on the result
  * screen. Latency: Generate workloads choose a per-output-token limit (the
  * request limit is that x max_new_tokens, see lib/sloPresets.ts), others a
- * per-request limit; both can be "no limit". Throughput: the demand the whole
- * single recommended instance must carry within its target utilization. */
+ * per-request limit; both can be "no limit". Purpose: online serving takes a
+ * throughput SLO (the demand the single recommended instance must carry within
+ * its target load); offline batch processing takes the amount of work
+ * (optional) instead, and the instance runs at its largest-throughput batch. */
 export default function SloStep({ jobId, payload, onSubmitted }: Props) {
   const tokens = generatedTokens(payload);
   const isGenerate = tokens !== null;
   const [preset, setPreset] = useState<LatencyPreset>(isGenerate ? "standard" : "custom");
   const [customRaw, setCustomRaw] = useState(isGenerate ? "100" : "100");
+  const [purpose, setPurpose] = useState<WorkloadPurpose>("online");
   const [minThroughputRaw, setMinThroughputRaw] = useState("10");
+  const [totalRequestsRaw, setTotalRequestsRaw] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -178,11 +182,20 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
   const customValid = Number.isFinite(custom) && custom > 0;
   const minThroughput = Number(minThroughputRaw);
   const minThroughputValid = Number.isFinite(minThroughput) && minThroughput > 0;
+  const totalRequests = Number(totalRequestsRaw);
+  const totalRequestsValid = totalRequestsRaw.trim() === "" || (Number.isFinite(totalRequests) && totalRequests > 0);
   const latencyValid = preset !== "custom" || customValid;
-  const valid = latencyValid && minThroughputValid;
+  const valid = latencyValid && (purpose === "online" ? minThroughputValid : totalRequestsValid);
 
   function buildSlo(): SloInput {
-    const base: SloInput = { min_throughput_rps: minThroughput, latency_preset: preset };
+    const base: SloInput =
+      purpose === "online"
+        ? { purpose, min_throughput_rps: minThroughput, latency_preset: preset }
+        : {
+            purpose,
+            total_requests: totalRequestsRaw.trim() === "" ? null : totalRequests,
+            latency_preset: preset,
+          };
     if (preset === "none") return base;
     if (isGenerate) {
       const spec = GENERATE_LATENCY_PRESETS.find((p) => p.id === preset);
@@ -229,6 +242,22 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
       </div>
 
       <div className="space-y-2">
+        <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">워크로드 목적</p>
+        <OptionCard
+          selected={purpose === "online"}
+          onSelect={() => setPurpose("online")}
+          title="온라인 서빙"
+          description="요청이 계속 들어오는 서비스(챗봇, API 등). 들어오는 요청량을 감당하면서 응답이 빠른 작은 배치로 운영합니다."
+        />
+        <OptionCard
+          selected={purpose === "offline"}
+          onSelect={() => setPurpose("offline")}
+          title="오프라인 일괄 처리"
+          description="정해진 양의 데이터를 한꺼번에 처리하는 작업(대량 분류·요약 등). 입력한 배치부터 시작해 지연 SLO를 넘지 않는 가장 처리량이 큰 배치로 운영하고, 요청당 비용으로 비교합니다."
+        />
+      </div>
+
+      <div className="space-y-2">
         <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">지연 SLO</p>
         {isGenerate ? (
           <>
@@ -272,7 +301,7 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
           selected={preset === "none"}
           onSelect={() => setPreset("none")}
           title="제한 없음"
-          description="배치·오프라인 처리처럼 응답 시간이 중요하지 않은 경우. 수요만 맞추는 가장 저렴한 구성을 찾습니다."
+          description="응답 시간이 중요하지 않은 경우. 입력한 배치까지 모든 배치를 쓸 수 있습니다."
         />
         {selectedPerToken !== null && tokens !== null && (
           <p className="rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400">
@@ -282,13 +311,14 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
         )}
       </div>
 
+      {purpose === "online" ? (
       <div className="space-y-1">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
           처리량 SLO (초당 요청 수)
         </label>
         <p className="text-xs text-neutral-500">
-          서비스 전체에 1초 동안 들어올 요청 수입니다. 추천하는 인스턴스 한 대가 이 요청량을 최대 처리량의
-          80%(목표 사용률) 안에서 감당해야 합니다.
+          서비스 전체에 1초 동안 들어올 요청 수입니다. 추천하는 인스턴스 한 대가 이 요청량을 처리량의
+          80%(목표 부하율) 안에서 감당해야 합니다.
           {isGenerate
             ? ` 요청 1건 = 프롬프트 1개에 답변 ${tokens}토큰 생성.`
             : " 요청 1건 = 입력 1개(예: 이미지 1장) 처리."}
@@ -304,6 +334,30 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
         {!minThroughputValid && <p className="text-xs text-red-600">0보다 큰 값을 입력하세요.</p>}
         <ThroughputHelper onApply={(v) => setMinThroughputRaw(String(v))} />
       </div>
+      ) : (
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+          처리할 요청 수 (선택)
+        </label>
+        <p className="text-xs text-neutral-500">
+          작업 전체의 요청 수입니다. 입력하면 인스턴스마다 완료까지 걸리는 시간과 비용을 함께 보여 드립니다. 비워
+          두면 요청당 비용으로만 비교합니다.
+          {isGenerate
+            ? ` 요청 1건 = 프롬프트 1개에 답변 ${tokens}토큰 생성.`
+            : " 요청 1건 = 입력 1개(예: 이미지 1장) 처리."}
+        </p>
+        <input
+          type="number"
+          min={0}
+          step="1"
+          placeholder="예: 1000000"
+          value={totalRequestsRaw}
+          onChange={(e) => setTotalRequestsRaw(e.target.value)}
+          className={INPUT_CLASS}
+        />
+        {!totalRequestsValid && <p className="text-xs text-red-600">0보다 큰 값을 입력하거나 비워 두세요.</p>}
+      </div>
+      )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 

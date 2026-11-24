@@ -51,7 +51,7 @@ export function evaluateSlo(
       : "unknown";
 
   const throughput: SloVerdict =
-    ok && prediction!.predicted_throughput_rps !== undefined
+    ok && prediction!.predicted_throughput_rps !== undefined && slo.min_throughput_rps != null
       ? prediction!.predicted_throughput_rps >= slo.min_throughput_rps
         ? "pass"
         : "fail"
