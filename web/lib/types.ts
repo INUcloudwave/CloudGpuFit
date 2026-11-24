@@ -227,18 +227,15 @@ export type WorkloadPurpose = "online" | "offline";
 export interface RecommendationPlan {
   instance_type: string;
   operating_batch: number;
-  /** Predicted P90 of one batch run (T, batch processing time; no queueing) at the operating batch. */
+  /** Predicted P90 of one batch run (T, batch processing time; no queueing) at the operating batch.
+   * The operating batch starts at the batch the user entered and steps down only on an SLO miss. */
   latency_ms: number;
-  /** Worst case incl. waiting for the previous batch: 2T. */
-  wait_latency_ms: number;
-  /** "pass": 2T <= SLO, "edge": T <= SLO < 2T. */
-  verdict: "pass" | "edge";
-  /** Predicted throughput at the operating batch (online: x target load >= demand). */
+  /** Predicted throughput at the operating batch (online: >= demand). */
   operating_rps: number;
-  /** Largest throughput among batches within the latency SLO. */
+  /** Largest throughput among batches within the latency SLO (the instance's predicted capacity). */
   capacity_rps: number;
-  /** Online: demand / operating_rps (<= target load). */
-  load_ratio?: number;
+  /** Online: demand / capacity_rps, how close the instance runs to its predicted capacity. */
+  demand_share?: number;
   cost_usd_per_hour: number;
   cost_usd_per_month: number;
   /** Offline: hourly price / throughput, per 1M requests. */
@@ -254,8 +251,6 @@ export interface RecommendationRow extends Partial<RecommendationPlan> {
   status: RowStatus;
   price_usd_per_hour: number | null;
   capacity_batch?: number;
-  /** capacity_rps x target utilization: the most demand this instance takes. */
-  max_demand_rps?: number;
   /** P90 at capacity_batch. */
   capacity_latency_ms?: number;
   /** The batch the user entered and how it does on its own. */
@@ -276,10 +271,8 @@ export interface Recommendation {
   error?: string;
   policy?: {
     purpose?: WorkloadPurpose;
-    target_utilization: number;
     demand_rps?: number | null;
     total_requests?: number | null;
-    wait_factor: number;
     similar_pct: number;
     hours_per_month: number;
     latency_judgement: string;
@@ -317,8 +310,6 @@ export interface SloInput {
   min_throughput_rps?: number | null;
   /** Offline: how many requests the job has (optional; for time and cost to finish). */
   total_requests?: number | null;
-  /** Target load (목표 부하율) = demand / throughput, 0.5-0.9 (default 0.8). Online only. */
-  target_utilization?: number;
 }
 
 /** recommendation.resolve_latency_limit(): the request-level limit used. */

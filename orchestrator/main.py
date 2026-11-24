@@ -106,8 +106,8 @@ class SloIn(BaseModel):
     and submitting it never starts a new job.
 
     purpose "online": min_throughput_rps is the demand the one recommended
-    instance must carry (passes when demand <= its capacity x
-    target_utilization). purpose "offline": no arrival rate; total_requests
+    instance must carry (passes when some batch <= the user's batch meets
+    the latency SLO and its throughput >= demand). purpose "offline": no arrival rate; total_requests
     (optional) is the amount of work, for completion time and cost."""
 
     purpose: Literal["online", "offline"] = "online"
@@ -122,17 +122,6 @@ class SloIn(BaseModel):
     latency_preset: Optional[Literal["realtime", "standard", "custom", "none"]] = None
     min_throughput_rps: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     total_requests: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
-    # Target load ("목표 부하율" on screen): demand / throughput, not GPU
-    # utilization. Online only (passes when demand <= capacity x this, and the
-    # operating batch keeps demand <= its throughput x this). 0.8 by default,
-    # 0.5-0.9: headroom for prediction error (some GPUs read 10-20% fast) and
-    # traffic peaks. Old SLO rows without it read as 0.8.
-    target_utilization: float = Field(
-        default=recommendation.TARGET_UTILIZATION,
-        ge=recommendation.TARGET_UTILIZATION_MIN,
-        le=recommendation.TARGET_UTILIZATION_MAX,
-        allow_inf_nan=False,
-    )
 
     @model_validator(mode="after")
     def _one_latency_limit(self):
@@ -302,7 +291,6 @@ def job_view(row) -> dict[str, Any]:
             {**slo, "max_latency_ms": latency["max_latency_ms"]} if slo else None,
             (payload.get("deployment") or {}).get("budget_usd_per_hour"),
             max_batch=int(payload.get("batch_size") or 1),
-            target_utilization=float((slo or {}).get("target_utilization") or recommendation.TARGET_UTILIZATION),
         )
         result["recommendation"]["latency_limit"] = latency
     except Exception as exc:  # noqa: BLE001 - a bad recommendation must not hide the job itself

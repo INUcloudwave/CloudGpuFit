@@ -247,13 +247,13 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
           selected={purpose === "online"}
           onSelect={() => setPurpose("online")}
           title="온라인 서빙"
-          description="요청이 계속 들어오는 서비스(챗봇, API 등). 들어오는 요청량을 감당하면서 응답이 빠른 작은 배치로 운영합니다."
+          description="요청이 계속 들어오는 서비스(챗봇, API 등). 입력한 배치부터 시작해 지연·처리량 SLO를 어길 때만 배치를 내리고, 시간당 비용과 응답 시간으로 비교합니다."
         />
         <OptionCard
           selected={purpose === "offline"}
           onSelect={() => setPurpose("offline")}
           title="오프라인 일괄 처리"
-          description="정해진 양의 데이터를 한꺼번에 처리하는 작업(대량 분류·요약 등). 입력한 배치부터 시작해 지연 SLO를 넘지 않는 가장 처리량이 큰 배치로 운영하고, 요청당 비용으로 비교합니다."
+          description="정해진 양의 데이터를 한꺼번에 처리하는 작업(대량 분류·요약 등). 입력한 배치부터 시작해 지연 SLO를 어길 때만 배치를 내리고(아래 배치의 처리량이 더 크면 그 배치), 요청당 비용과 처리량으로 비교합니다."
         />
       </div>
 
@@ -317,8 +317,8 @@ export default function SloStep({ jobId, payload, onSubmitted }: Props) {
           처리량 SLO (초당 요청 수)
         </label>
         <p className="text-xs text-neutral-500">
-          서비스 전체에 1초 동안 들어올 요청 수입니다. 추천하는 인스턴스 한 대가 이 요청량을 처리량의
-          80%(목표 부하율) 안에서 감당해야 합니다.
+          서비스 전체에 1초 동안 들어올 요청 수입니다. 추천하는 인스턴스 한 대의 예측 처리량이 이 요청량
+          이상이어야 합니다.
           {isGenerate
             ? ` 요청 1건 = 프롬프트 1개에 답변 ${tokens}토큰 생성.`
             : " 요청 1건 = 입력 1개(예: 이미지 1장) 처리."}

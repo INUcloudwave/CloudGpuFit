@@ -45,53 +45,59 @@ class RecommendTest(unittest.TestCase):
     def test_capacity_operating_batch_and_cost(self):
         r = rec.recommend(CANDS, CURVES, SLO, None)
         a = row(r, "a.xlarge")
-        # usable for A at 350 ms: b1, b8, b16 (b32 is 900 ms). capacity 50 -> takes up to 40 rps at 80%
-        self.assertEqual((a["status"], a["capacity_rps"], a["capacity_batch"], a["max_demand_rps"]), ("ok", 50, 16, 40))
-        # demand 30 at 80% -> smallest batch with rps x 0.8 >= 30 is b8 (40 rps, 200 ms)
-        self.assertEqual((a["operating_batch"], a["latency_ms"]), (8, 200))
-        self.assertAlmostEqual(a["load_ratio"], 30 / 40)
-        self.assertEqual(a["verdict"], "edge")                     # 2 x 200 = 400 > 350
+        # usable for A at 350 ms: b1, b8, b16 (b32 is 900 ms). capacity 50 at b16
+        self.assertEqual((a["status"], a["capacity_rps"], a["capacity_batch"]), ("ok", 50, 16))
+        # from the largest batch down: b32 misses latency, b16 (50 rps >= 30) is the operating batch
+        self.assertEqual((a["operating_batch"], a["latency_ms"], a["operating_rps"]), (16, 300, 50))
+        self.assertAlmostEqual(a["demand_share"], 30 / 50)
         self.assertEqual((a["cost_usd_per_hour"], a["cost_usd_per_month"]), (1.0, 720.0))
-        self.assertNotIn("units", a)
+        for gone in ("units", "load_ratio", "max_demand_rps", "wait_latency_ms", "verdict"):
+            self.assertNotIn(gone, a)
         b = row(r, "b.xlarge")
-        self.assertEqual((b["operating_batch"], b["latency_ms"], b["verdict"]), (8, 80, "pass"))
+        # B's b32 (200 ms, 160 rps) meets both SLOs: it stays at the largest batch
+        self.assertEqual((b["operating_batch"], b["latency_ms"]), (32, 200))
         self.assertEqual((r["status"], r["cheapest"]), ("ok", "a.xlarge"))
 
     def test_throughput_slo_is_a_per_instance_condition(self):
         r = rec.recommend(CANDS, CURVES, {"max_latency_ms": 350, "min_throughput_rps": 100}, None)
         a = row(r, "a.xlarge")
-        self.assertEqual((a["status"], a["max_demand_rps"], a["capacity_batch"]), ("throughput_short", 40, 16))
-        self.assertEqual(row(r, "b.xlarge")["status"], "ok")          # 160 x 0.8 = 128 >= 100
+        self.assertEqual((a["status"], a["capacity_batch"]), ("throughput_short", 16))
+        self.assertAlmostEqual(a["demand_share"], 100 / 50)
+        self.assertEqual(row(r, "b.xlarge")["status"], "ok")          # 160 >= 100
         self.assertEqual(r["cheapest"], "b.xlarge")
+
+    def test_no_headroom_demand_equal_to_capacity_passes(self):
+        r = rec.recommend(CANDS, CURVES, {"max_latency_ms": 350, "min_throughput_rps": 50}, None)
+        a = row(r, "a.xlarge")
+        self.assertEqual((a["status"], a["operating_batch"]), ("ok", 16))
+        self.assertAlmostEqual(a["demand_share"], 1.0)
+        self.assertFalse(hasattr(rec, "TARGET_UTILIZATION"))
 
     def test_no_single_instance_is_enough(self):
         r = rec.recommend(CANDS, CURVES, {"max_latency_ms": 350, "min_throughput_rps": 200}, None)
         self.assertEqual((r["status"], r["cheapest"], r["budget_plan"]), ("throughput_short", None, None))
 
-    def test_target_utilization(self):
-        slo = {"max_latency_ms": 350, "min_throughput_rps": 50}
-        self.assertEqual(row(rec.recommend(CANDS, CURVES, slo, None), "a.xlarge")["status"], "throughput_short")
-        a = row(rec.recommend(CANDS, CURVES, slo, None, target_utilization=1.0), "a.xlarge")
-        self.assertEqual((a["status"], a["operating_batch"]), ("ok", 16))
-        with self.assertRaises(ValueError):
-            rec.recommend(CANDS, CURVES, SLO, None, target_utilization=1.2)
+    def test_input_batch_is_used_when_it_meets_the_slos(self):
+        for demand in (1, 7, 30, 99, 160):
+            r = rec.recommend(CANDS, CURVES, {"max_latency_ms": 350, "min_throughput_rps": demand}, None,
+                              max_batch=32)
+            # B's b32 meets latency (200 ms) and covers every demand up to 160
+            self.assertEqual(row(r, "b.xlarge")["operating_batch"], 32)
 
-    def test_load_at_operating_batch_never_exceeds_target(self):
-        for target in (0.5, 0.8, 0.9):
-            for demand in (1, 7, 30, 41, 99, 128, 333):
-                r = rec.recommend(CANDS, CURVES, {"max_latency_ms": 350, "min_throughput_rps": demand}, None,
-                                  target_utilization=target)
-                for x in r["rows"]:
-                    if x["status"] == "ok":
-                        self.assertLessEqual(x["load_ratio"], target + 1e-9)
+    def test_steps_down_only_for_a_latency_miss(self):
+        r = rec.recommend(CANDS, CURVES, SLO, None, max_batch=32)
+        a = row(r, "a.xlarge")
+        # A's b32 is 900 ms > 350 -> one step down to b16
+        self.assertEqual((a["input_batch"], a["input_batch_latency_ok"], a["operating_batch"]), (32, False, 16))
 
-    def test_lower_target_moves_to_a_larger_batch(self):
-        # demand 30: at 0.8 b8 (40 x 0.8 = 32), at 0.7 b16 (50 x 0.7 = 35; b8 28 < 30)
-        slo = {"max_latency_ms": 350, "min_throughput_rps": 30}
-        a8 = row(rec.recommend(CANDS, CURVES, slo, None), "a.xlarge")
-        a7 = row(rec.recommend(CANDS, CURVES, slo, None, target_utilization=0.7), "a.xlarge")
-        self.assertEqual((a8["operating_batch"], a8["latency_ms"]), (8, 200))
-        self.assertEqual((a7["operating_batch"], a7["latency_ms"]), (16, 300))
+    def test_steps_down_past_a_saturated_batch(self):
+        # throughput falls at b32 (45 < 50 at b16): demand 48 is covered by b16, not b32
+        curves = {"a.xlarge": [pt(1, 100, 10), pt(8, 200, 40), pt(16, 300, 50), pt(32, 340, 45)]}
+        r = rec.recommend(CANDS[:1], curves, {"max_latency_ms": 350, "min_throughput_rps": 48}, None)
+        a = row(r, "a.xlarge")
+        self.assertEqual((a["status"], a["operating_batch"], a["capacity_batch"]), ("ok", 16, 16))
+        r = rec.recommend(CANDS[:1], curves, {"max_latency_ms": 350, "min_throughput_rps": 44}, None)
+        self.assertEqual(row(r, "a.xlarge")["operating_batch"], 32)
 
     def test_input_batch_is_reported(self):
         r = rec.recommend(CANDS, CURVES, SLO, None, max_batch=32)
@@ -107,7 +113,7 @@ class RecommendTest(unittest.TestCase):
     def test_max_batch_caps_capacity(self):
         r = rec.recommend(CANDS, CURVES, SLO, None, max_batch=1)
         self.assertEqual((row(r, "a.xlarge")["capacity_rps"], row(r, "a.xlarge")["status"]), (10, "throughput_short"))
-        self.assertEqual(r["status"], "throughput_short")              # B: 20 x 0.8 = 16 < 30
+        self.assertEqual(r["status"], "throughput_short")              # B: 20 < 30
 
     def test_slo_impossible_reports_fastest_point(self):
         r = rec.recommend(CANDS, CURVES, {"max_latency_ms": 60, "min_throughput_rps": 5}, None)
@@ -127,7 +133,7 @@ class RecommendTest(unittest.TestCase):
 
     def test_budget_plan_is_the_fastest_instance_in_budget(self):
         bp = rec.recommend(CANDS, CURVES, SLO, 4.0)["budget_plan"]
-        self.assertEqual((bp["instance_type"], bp["operating_batch"], bp["latency_ms"]), ("b.xlarge", 8, 80))
+        self.assertEqual((bp["instance_type"], bp["operating_batch"], bp["latency_ms"]), ("b.xlarge", 32, 200))
         self.assertFalse(bp["same_as_cheapest"])
         self.assertIsNone(rec.recommend(CANDS, CURVES, SLO, None)["budget_plan"])
 
@@ -172,7 +178,7 @@ class OfflineTest(unittest.TestCase):
         self.assertAlmostEqual(b["cost_usd_per_million"], 2.0 / (160 * 3600) * 1e6)
         self.assertAlmostEqual(a["job_hours"], 20.0)                    # 3.6M / 50 rps / 3600
         self.assertAlmostEqual(b["job_cost_usd"], 12.5)                  # 6.25 h x $2
-        self.assertNotIn("max_demand_rps", a)
+        self.assertNotIn("demand_share", a)
         # B is cheaper per request even at twice the hourly price
         self.assertEqual((r["status"], r["cheapest"], r["policy"]["purpose"]), ("ok", "b.xlarge", "offline"))
 
@@ -200,13 +206,12 @@ class LatencyLimitTest(unittest.TestCase):
 
     def test_presets_are_the_documented_values(self):
         self.assertEqual(rec.LATENCY_PRESETS_MS_PER_TOKEN, {"realtime": 50.0, "standard": 100.0})
-        self.assertEqual((rec.TARGET_UTILIZATION, rec.TARGET_UTILIZATION_MAX), (0.8, 0.9))
 
     def test_no_latency_limit_uses_full_curve(self):
         r = rec.recommend(CANDS, CURVES, {"max_latency_ms": None, "min_throughput_rps": 45}, None)
         a = row(r, "a.xlarge")
-        # b32 (900 ms, 60 rps) is usable now: capacity 60 x 0.8 = 48 >= 45; only b32 covers 45 at 80%
-        self.assertEqual((a["status"], a["capacity_rps"], a["operating_batch"], a["verdict"]), ("ok", 60, 32, "pass"))
+        # b32 (900 ms, 60 rps) is usable now and covers 45: the largest batch is kept
+        self.assertEqual((a["status"], a["capacity_rps"], a["operating_batch"]), ("ok", 60, 32))
         self.assertIsNone(r["policy"]["max_latency_ms"])
 
 

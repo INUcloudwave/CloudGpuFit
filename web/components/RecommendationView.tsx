@@ -6,7 +6,6 @@ import type {
   Recommendation,
   RecommendationPlan,
   RecommendationRow,
-  SloInput,
   WorkloadPurpose,
 } from "@/lib/types";
 import {
@@ -20,20 +19,16 @@ import {
   type ScoredRow,
   type WeightPreset,
 } from "@/lib/weighting";
-import {
-  DEFAULT_TARGET_UTILIZATION,
-  MAX_TARGET_UTILIZATION,
-  MIN_TARGET_UTILIZATION,
-  describeLatency,
-  describeWorkload,
-} from "@/lib/sloPresets";
+import { describeLatency, describeWorkload } from "@/lib/sloPresets";
 
 /**
  * Result screen for orchestrator/recommendation.py: ONE instance. The backend
  * computes everything (operating batch, latency, cost); this component only
  * formats it and orders the passing instances by the user's weights.
- * Changing the target load re-submits the SLO and the backend recomputes on
- * read -- no new prediction. Moving the weights is local and instant.
+ * Moving the weights is local and instant -- no new prediction.
+ *
+ * Operating batch: the batch the user entered, stepped down (128, 64, 32, 16,
+ * 8, 1) only when it misses an SLO. BatchReason says why it stepped down.
  */
 
 type CostUnit = "hour" | "month";
@@ -77,6 +72,15 @@ const ROW_STATUS_LABEL: Record<string, string> = {
   no_prediction: "예측 실패",
 };
 
+/** Why the operating batch is what it is, relative to the batch the user entered. */
+function batchReason(row: RecommendationRow, offline: boolean): string {
+  if (row.input_batch === undefined || row.operating_batch === row.input_batch) return "입력한 배치 그대로";
+  if (row.input_batch_latency_ok === false) return `입력 배치 ${row.input_batch}: 지연 SLO 초과로 내림`;
+  return offline
+    ? `입력 배치 ${row.input_batch}: 아래 배치의 처리량이 더 커서 내림`
+    : `입력 배치 ${row.input_batch}: 처리량 SLO 미달로 내림`;
+}
+
 /** "배치 128: 14,790 ms · 9.9 req/s · 지연 SLO 충족" -- the user's own batch. */
 function InputBatchNote({ row, compact }: { row: RecommendationRow; compact?: boolean }) {
   if (row.input_batch === undefined) return null;
@@ -104,7 +108,6 @@ function PlanCard({
   maxLatencyMs,
   tokens,
   demand,
-  target,
   totalRequests,
   highlight,
 }: {
@@ -116,7 +119,6 @@ function PlanCard({
   maxLatencyMs: number | null;
   tokens: number | null;
   demand: number | null;
-  target: number;
   totalRequests: number | null;
   highlight?: boolean;
 }) {
@@ -141,7 +143,7 @@ function PlanCard({
         <dd className="font-mono">
           {plan.operating_batch}
           <span className="block font-sans text-xs text-neutral-400">
-            {offline ? "지연 SLO 안에서 처리량이 가장 큰 배치" : "요청량을 감당하는 가장 작은 배치"}
+            {batchReason(plan, offline)}
           </span>
         </dd>
         <dt className="text-neutral-500">배치 1회 처리 시간 P90 (T)</dt>
@@ -173,14 +175,14 @@ function PlanCard({
             <dt className="text-neutral-500">운영 배치 처리량</dt>
             <dd className="font-mono">
               {rps(plan.operating_rps)}
-              <span className="block text-xs text-neutral-400">
-                수요 {rps(demand)} → 부하율 {pct(plan.load_ratio)} (목표 {Math.round(target * 100)}% 이하)
-              </span>
+              <span className="block text-xs text-neutral-400">요청량 {rps(demand)} 감당</span>
             </dd>
             <dt className="text-neutral-500">최대 처리량</dt>
             <dd className="font-mono">
               {rps(plan.capacity_rps)}
-              <span className="block text-xs text-neutral-400">배치 {plan.capacity_batch} 기준 · 지연 SLO 안에서</span>
+              <span className="block text-xs text-neutral-400">
+                배치 {plan.capacity_batch} 기준 · 요청량 비중 {pct(plan.demand_share)}
+              </span>
             </dd>
           </>
         )}
@@ -199,7 +201,7 @@ function StatusNote({ rec }: { rec: Recommendation }) {
     over_budget:
       "예산 안에서 SLO를 만족하는 인스턴스가 없습니다. 예산을 넘지만 가장 저렴한 인스턴스를 보여 드립니다.",
     throughput_short:
-      "한 대로 이 요청량을 감당하는 인스턴스가 없습니다. 표의 '최대 감당 요청량'을 참고해 요청량을 줄이거나, 최대 배치를 늘리거나, 지연 SLO를 완화해 보세요.",
+      "한 대로 이 요청량을 감당하는 인스턴스가 없습니다. 표의 '최대 처리량'을 참고해 요청량을 줄이거나, 최대 배치를 늘리거나, 지연 SLO를 완화해 보세요.",
     slo_impossible:
       "어느 후보도 지연 SLO를 만족하지 못합니다. 아래 표의 '최소 지연'을 참고해 SLO를 완화해 보세요.",
     no_price: "후보 인스턴스의 가격 정보가 없어 비용을 계산할 수 없습니다.",
@@ -251,14 +253,15 @@ function RowsTable({
   const labels = criteriaLabels(purpose);
   const cols = offline
     ? ["인스턴스", "운영 배치", "T (운영 배치)", "처리량 (운영 배치)", "요청 100만 건당", "완료 예상", `입력 배치 ${inputBatch}`, "시간당 요금", `최저 대비 (${labels.cost} / ${labels.other})`]
-    : ["인스턴스", "운영 배치", "T (운영 배치)", "처리량 · 부하율 (운영 배치)", "최대 처리량 (기준 배치)", `입력 배치 ${inputBatch}`, "비용", `최저 대비 (${labels.cost} / ${labels.other})`];
+    : ["인스턴스", "운영 배치", "T (운영 배치)", "처리량 (운영 배치)", "최대 처리량 · 요청량 비중", `입력 배치 ${inputBatch}`, "비용", `최저 대비 (${labels.cost} / ${labels.other})`];
   return (
     <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
       <div className="border-b border-neutral-200 px-5 py-4 dark:border-neutral-700">
         <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">전체 후보</h3>
         <p className="mt-0.5 text-xs text-neutral-500">
-          ‘운영 배치’ 열들은 시스템이 고른 운영 배치 기준이고, ‘최대 처리량’은 지연 SLO 안에서 처리량이 가장 큰
-          배치 기준, ‘입력 배치’는 입력하신 배치 그대로 돌렸을 때의 예측입니다.
+          ‘운영 배치’ 열들은 입력하신 배치 {inputBatch}에서 시작해 SLO를 어길 때만 한 단계씩 내린 배치 기준입니다.
+          ‘최대 처리량’은 지연 SLO 안에서 처리량이 가장 큰 배치 기준이고, ‘요청량 비중’은 요청량이 그 처리량의 몇
+          %인지입니다. ‘입력 배치’는 입력하신 배치 그대로 돌렸을 때의 예측입니다.
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -304,7 +307,12 @@ function RowsTable({
                   </td>
                   {r.status === "ok" ? (
                     <>
-                      <td className="px-4 py-3 font-mono">{r.operating_batch}</td>
+                      <td className="px-4 py-3 font-mono">
+                        {r.operating_batch}
+                        {r.operating_batch !== r.input_batch && (
+                          <span className="block font-sans text-[11px] text-neutral-400">{batchReason(r, offline)}</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 font-mono">{ms(r.latency_ms)}</td>
                       {offline ? (
                         <>
@@ -316,11 +324,10 @@ function RowsTable({
                         </>
                       ) : (
                         <>
+                          <td className="px-4 py-3 font-mono">{rps(r.operating_rps)}</td>
                           <td className="px-4 py-3 font-mono">
-                            {rps(r.operating_rps)} · {pct(r.load_ratio)}
-                          </td>
-                          <td className="px-4 py-3 font-mono">
-                            {rps(r.capacity_rps)} <span className="text-xs text-neutral-400">(배치 {r.capacity_batch})</span>
+                            {rps(r.capacity_rps)} · {pct(r.demand_share)}{" "}
+                            <span className="text-xs text-neutral-400">(배치 {r.capacity_batch})</span>
                           </td>
                         </>
                       )}
@@ -341,8 +348,8 @@ function RowsTable({
                       {r.status === "no_prediction" && r.reason && <> — {r.reason}</>}
                       {r.status === "throughput_short" && (
                         <>
-                          {" "}— 최대 감당 요청량 {rps(r.max_demand_rps)} (배치 {r.capacity_batch} 처리량{" "}
-                          {rps(r.capacity_rps)}의 목표 부하율, 지연 {ms(r.capacity_latency_ms)}) · {costText(r, costUnit)}
+                          {" "}— 최대 처리량 {rps(r.capacity_rps)} (배치 {r.capacity_batch}, 지연{" "}
+                          {ms(r.capacity_latency_ms)}), 요청량 비중 {pct(r.demand_share)} · {costText(r, costUnit)}
                         </>
                       )}
                       {r.input_batch !== undefined && r.status !== "no_prediction" && (
@@ -364,7 +371,6 @@ function RowsTable({
 
 export default function RecommendationView({
   job,
-  onJobUpdate,
   onReset,
 }: {
   job: JobResponse;
@@ -380,41 +386,11 @@ export default function RecommendationView({
   // Weight of the cost criterion (0-1); the other criterion gets 1 - this.
   const [costWeight, setCostWeight] = useState(PRESET_COST_WEIGHT.cost);
   const activePreset = presetOf(costWeight);
-  const appliedTarget = Math.min(
-    slo?.target_utilization ?? rec?.policy?.target_utilization ?? DEFAULT_TARGET_UTILIZATION,
-    MAX_TARGET_UTILIZATION
-  );
   const limit = rec?.latency_limit ?? null;
   const maxLatencyMs = limit?.max_latency_ms ?? null;
   const tokens = limit?.basis === "per_token" ? limit.tokens : null;
   const demand = slo?.min_throughput_rps ?? null;
   const totalRequests = slo?.total_requests ?? null;
-  const [draftTarget, setDraftTarget] = useState(Math.round(appliedTarget * 100));
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  async function applyTarget() {
-    if (!slo) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const body: SloInput = { ...slo, target_utilization: draftTarget / 100 };
-      const res = await fetch(`/api/jobs/${job.job_id}/slo`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        setSaveError("목표 부하율을 저장하지 못했습니다.");
-        return;
-      }
-      onJobUpdate((await res.json()) as JobResponse);
-    } catch {
-      setSaveError("오케스트레이터에 연결할 수 없습니다.");
-    } finally {
-      setSaving(false);
-    }
-  }
 
   const rows = rec?.rows ?? [];
   const scored = scoreRows(rows, costWeight, purpose);
@@ -493,38 +469,6 @@ export default function RecommendationView({
               </button>
             ))}
           </div>
-
-          {slo && !offline && (
-            <div className="w-72 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
-              <div className="flex items-baseline justify-between">
-                <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">목표 부하율</p>
-                <span className="font-mono text-sm font-semibold">{draftTarget}%</span>
-              </div>
-              <input
-                type="range"
-                min={MIN_TARGET_UTILIZATION * 100}
-                max={MAX_TARGET_UTILIZATION * 100}
-                step={5}
-                value={draftTarget}
-                onChange={(e) => setDraftTarget(Number(e.target.value))}
-                className="mt-1 w-full accent-neutral-800 dark:accent-white"
-              />
-              <p className="text-[11px] leading-snug text-neutral-400">
-                요청량 ÷ 운영 배치 처리량의 상한입니다(GPU 사용률과는 다른 값). 기본 80%, 최대 90%. 예측이 실측보다
-                10~20% 빠르게 나오는 GPU가 있고 요청량은 순간적으로 평균을 넘으므로 여유를 둡니다. 낮추면 더 큰
-                운영 배치가 필요해 T가 길어질 수 있습니다.
-              </p>
-              <button
-                type="button"
-                disabled={saving || draftTarget === Math.round(appliedTarget * 100)}
-                onClick={applyTarget}
-                className="mt-2 w-full rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-neutral-900"
-              >
-                {saving ? "적용 중…" : "적용"}
-              </button>
-              {saveError && <p className="mt-1 text-xs text-red-600">{saveError}</p>}
-            </div>
-          )}
         </div>
       </div>
 
@@ -538,12 +482,12 @@ export default function RecommendationView({
 
           {rec.rows.length > 0 && (
             <p className="rounded-lg bg-neutral-50 px-4 py-3 text-xs leading-relaxed text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400">
-              <b>운영 배치 기준으로 보여 드립니다.</b> 입력하신 배치 {inputBatch}는 VRAM을 확인한 상한이고, 실제로는{" "}
+              <b>운영 배치 기준으로 보여 드립니다.</b> 입력하신 배치 {inputBatch}에서 시작해,{" "}
               {offline
-                ? "그 아래에서 지연 SLO를 넘지 않는 가장 처리량이 큰 배치(입력 배치부터 한 단계씩 내려가며 확인)"
-                : "그 아래에서 요청량을 목표 부하율 안에서 감당하는 가장 작은 배치(작을수록 배치 1회 처리 시간이 짧음)"}
-              로 운영한다고 보고 지연·처리량·비용을 계산했습니다. 입력하신 배치를 그대로 쓸 때의 결과는 각 카드와 표의
-              ‘입력 배치’에 있습니다.
+                ? "지연 SLO를 넘는 인스턴스만 한 단계씩(128→64→32→16→8→1) 내려 계산했습니다. 아래 배치의 처리량이 더 크면 그 배치를 씁니다."
+                : "지연 SLO나 처리량 SLO를 어기는 인스턴스만 한 단계씩(128→64→32→16→8→1) 내려 계산했습니다."}{" "}
+              SLO를 지키는 인스턴스는 입력하신 배치 그대로이고, 배치를 내린 인스턴스는 카드와 표의 ‘운영 배치’에 이유를
+              표시합니다.
             </p>
           )}
 
@@ -595,7 +539,7 @@ export default function RecommendationView({
                   {labels.other} 비중 × (최저 대비 배수), 낮을수록 위.
                   {offline
                     ? " 처리 시간은 요청 1건당 시간(1 ÷ 처리량)입니다."
-                    : " 처리량은 SLO를 통과하면 모두 같게 봅니다(목표 부하율 안에서 요청량을 감당)."}
+                    : " 처리량은 SLO를 통과하면(요청량을 감당하면) 모두 같게 봅니다."}
                 </p>
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -612,7 +556,6 @@ export default function RecommendationView({
                   maxLatencyMs={maxLatencyMs}
                   tokens={tokens}
                   demand={demand}
-                  target={appliedTarget}
                   totalRequests={totalRequests}
                   highlight
                 />
@@ -626,7 +569,6 @@ export default function RecommendationView({
                     maxLatencyMs={maxLatencyMs}
                     tokens={tokens}
                     demand={demand}
-                    target={appliedTarget}
                     totalRequests={totalRequests}
                   />
                 ) : (
@@ -669,12 +611,13 @@ export default function RecommendationView({
           )}
 
           <p className="text-xs leading-relaxed text-neutral-400">
-            지연 SLO는 T로 판정합니다. T는 예측기가 낸 배치 1회 처리 시간의 P90(보수적 추정)이며, 요청이 줄을 서거나
-            배치가 차기를 기다리는 시간은 포함하지 않습니다. 생성형 모델의 T는 입력 처리부터 마지막 토큰까지 요청 전체 시간이며, 토큰당 기준(실시간
+            지연 SLO는 T로 판정합니다. T는 예측기가 낸 배치 1회 처리 시간의 P90(보수적 추정)으로, 처리 시간만 봅니다.
+            요청이 줄을 서거나 배치가 차기를 기다리는 시간은 포함하지 않고, 운영 배치를 꽉 채운 경우의 시간이라 요청이
+            적어 배치가 덜 차면 실제로는 더 짧을 수 있습니다. 생성형 모델의 T는 입력 처리부터 마지막 토큰까지 요청 전체 시간이며, 토큰당 기준(실시간
             50ms, 일반 100ms)은 LLM 서빙 연구에서 대화형 서비스에 쓰는 토큰 간 지연(TPOT) 범위를 따랐습니다.
             {offline
               ? " 요청당 비용은 시간당 요금 ÷ 처리량이고, 완료 예상은 요청 수 ÷ 처리량입니다."
-              : " 처리량 SLO는 인스턴스 한 대가 요청량을 운영 배치 처리량의 목표 부하율(기본 80%) 안에서 감당하는지로 판정합니다."}{" "}
+              : " 처리량 SLO는 운영 배치의 예측 처리량이 요청량 이상인지로 판정합니다. 처리량은 예측값이라 실제와 차이가 날 수 있으니, 요청량 비중이 100%에 가까운 인스턴스는 여유가 적다는 점에 유의하세요."}{" "}
             월 비용은 시간당 × 720시간입니다.
           </p>
         </>

@@ -13,31 +13,32 @@ HANDOFF §3.7-§3.9):
     and no mixing of types.
   * Throughput = batch / latency (measured: sustained / single-request
     throughput 0.999-1.006 on all six GPUs).
+  * Latency T = the predicted P90 of ONE batch run (batch processing time).
+    Only processing time is considered: time spent waiting in a queue or for
+    a batch to fill is not modelled (stated as a limitation). The latency
+    definition is the latency part's (predictor) and is kept as is.
   * A batch is usable when its predicted P90 <= the latency SLO and it is not
     larger than the batch the user entered (VRAM was checked at that batch).
     Capacity = the largest predicted throughput among usable batches.
-  * Latency T = the predicted P90 of ONE batch run (batch processing time).
-    It does not include time spent waiting in a queue or for a batch to fill;
-    the latency definition is the latency part's (predictor) and is kept as is.
-    2T (a request that just missed the batch in flight waits one more run,
-    Nexus SOSP'19 §4.1) is shown for reference, not judged.
-  * Two purposes (2026-11-24):
+  * The operating batch starts from the batch the user entered and steps
+    down the grid (128, 64, 32, 16, 8, 1) only while an SLO is missed
+    (2026-11-25):
       - online  (default): requests arrive at min_throughput_rps. The
-        instance passes when demand <= capacity x target_utilization, and
-        the operating batch is the smallest usable batch whose throughput x
-        target_utilization covers the demand -- so the headroom holds at the
-        batch the instance actually runs, and a lower target moves it to a
-        larger batch. Smaller batch = shorter T.
+        operating batch is the largest batch <= the user's batch that meets
+        the latency SLO and whose throughput >= the demand. None -> the
+        instance fails (slo_impossible if no batch meets the latency SLO,
+        throughput_short otherwise). Stepping down shortens T but lowers
+        throughput, so it only repairs a latency miss.
       - offline: a fixed amount of work, no arrival rate. The operating batch
-        is the usable batch with the largest throughput (start from the
-        user's batch, step down while it misses the latency SLO), and
-        instances compare on cost per request (price / throughput) and,
-        given total_requests, the time and cost to finish.
-  * target_utilization ("목표 부하율" on screen = demand / throughput, not GPU
-    utilization) defaults to 0.8, user-adjustable 0.5-0.9. It is headroom
-    for prediction error and traffic swings: the predictor reads
-    g6e/g7/g7e 10-20% fast (measured / predicted median 1.09-1.20), and
-    a demand figure is an average that peaks above. It does not change T.
+        is the usable batch with the largest throughput (usually the user's
+        batch; a smaller one when throughput saturates or the user's batch
+        misses the latency SLO). Instances compare on cost per request
+        (price / throughput) and, given total_requests, time and cost to
+        finish.
+    No utilization headroom is applied: the instance passes when its
+    predicted throughput covers the demand. demand_share = demand / capacity
+    is reported so the user can see how close an instance runs to its limit
+    (throughput is a prediction; the predictor reads some GPUs 10-20% fast).
   * Latency limit (resolve_latency_limit): Generate workloads take it per
     output token (TPOT-style) and the request limit is per_token x
     max_new_tokens, because the predictor's latency is the whole request
@@ -46,8 +47,8 @@ HANDOFF §3.7-§3.9):
     the TPOT range LLM-serving work uses for interactive services (DistServe,
     OSDI'24). Other workloads take a per-request limit. None = no limit.
   * Each row also reports the user's own batch (input_batch_*): its P90,
-    throughput and whether it meets the latency SLO, so the user sees how the
-    batch they entered behaves even when another batch is chosen.
+    throughput and whether it meets the latency SLO, so the user sees why the
+    operating batch stepped down when it did.
   * Cost is the instance's hourly price; the monthly figure is x 720
     (24 h x 30 days, same as BUDGET_HOURS_PER_MONTH in the web app) for display.
   * Budget is an upper bound. Cheapest plan = lowest hourly price (online) or
@@ -62,12 +63,8 @@ import math
 from typing import Any, Iterable, Mapping, Sequence
 
 BATCH_GRID = (1, 8, 16, 32, 64, 128)
-TARGET_UTILIZATION = 0.8
-TARGET_UTILIZATION_MIN = 0.5
-TARGET_UTILIZATION_MAX = 0.9
 LATENCY_PRESETS_MS_PER_TOKEN = {"realtime": 50.0, "standard": 100.0}
 PURPOSES = ("online", "offline")
-WAIT_FACTOR = 2.0
 SIMILAR_PCT = 10.0
 HOURS_PER_MONTH = 720.0
 LATENCY_JUDGEMENT = "predicted_p90_ms"
@@ -135,13 +132,13 @@ def usable_points(points: Iterable[Mapping[str, Any]], max_latency_ms: float, ma
     return [p for p in _points(points, max_batch) if p["latency_ms"] <= max_latency_ms * (1.0 + _EPS)]
 
 
-def operating_point(usable: Sequence[Mapping[str, Any]], load_rps: float,
-                    target_utilization: float = 1.0) -> Mapping[str, Any]:
-    """Smallest usable batch whose throughput x target covers the load."""
-    for p in usable:
-        if p["rps"] * target_utilization >= load_rps * (1.0 - _EPS):
+def operating_point(usable: Sequence[Mapping[str, Any]], demand_rps: float) -> Mapping[str, Any] | None:
+    """Online: from the user's batch down, the first usable batch whose
+    throughput covers the demand (None when no usable batch does)."""
+    for p in sorted(usable, key=lambda p: p["batch"], reverse=True):
+        if p["rps"] >= demand_rps * (1.0 - _EPS):
             return p
-    return max(usable, key=lambda p: p["rps"])
+    return None
 
 
 def _input_batch(points: Sequence[Mapping[str, Any]], max_batch: int | None, max_latency_ms: float) -> dict[str, Any]:
@@ -158,28 +155,21 @@ def _input_batch(points: Sequence[Mapping[str, Any]], max_batch: int | None, max
 
 
 def evaluate(
-    usable: Sequence[Mapping[str, Any]],
+    op: Mapping[str, Any],
+    capacity_rps: float,
     demand_rps: float,
     price: float | None,
-    max_latency_ms: float,
     *,
-    target_utilization: float = TARGET_UTILIZATION,
-    wait_factor: float = WAIT_FACTOR,
     hours_per_month: float = HOURS_PER_MONTH,
 ) -> dict[str, Any]:
-    """Online: one instance serving the whole demand (caller checked capacity)."""
-    capacity = max(p["rps"] for p in usable)
-    op = operating_point(usable, demand_rps, target_utilization)
-    t = op["latency_ms"]
+    """Online: one instance serving the whole demand at operating batch `op`."""
     return {
         "operating_batch": op["batch"],
-        "latency_ms": t,
-        "wait_latency_ms": wait_factor * t,
-        "verdict": "pass" if wait_factor * t <= max_latency_ms * (1.0 + _EPS) else "edge",
+        "latency_ms": op["latency_ms"],
         "operating_rps": op["rps"],
-        "capacity_rps": capacity,
-        # share of the operating batch's throughput the demand takes (<= target)
-        "load_ratio": demand_rps / op["rps"],
+        "capacity_rps": capacity_rps,
+        # how much of the instance's predicted capacity the demand takes
+        "demand_share": demand_rps / capacity_rps,
         "cost_usd_per_hour": price,
         "cost_usd_per_month": price * hours_per_month if price is not None else None,
     }
@@ -188,21 +178,17 @@ def evaluate(
 def evaluate_offline(
     usable: Sequence[Mapping[str, Any]],
     price: float | None,
-    max_latency_ms: float,
     total_requests: float | None,
     *,
-    wait_factor: float = WAIT_FACTOR,
     hours_per_month: float = HOURS_PER_MONTH,
 ) -> dict[str, Any]:
     """Offline: run at the usable batch with the largest throughput."""
-    op = max(usable, key=lambda p: (p["rps"], -p["batch"]))
+    op = max(usable, key=lambda p: (p["rps"], p["batch"]))
     t, rps = op["latency_ms"], op["rps"]
     hours = total_requests / rps / 3600.0 if total_requests else None
     return {
         "operating_batch": op["batch"],
         "latency_ms": t,
-        "wait_latency_ms": wait_factor * t,
-        "verdict": "pass" if wait_factor * t <= max_latency_ms * (1.0 + _EPS) else "edge",
         "operating_rps": rps,
         "capacity_rps": rps,
         "cost_usd_per_hour": price,
@@ -220,8 +206,6 @@ def recommend(
     budget_usd_per_hour: float | None,
     *,
     max_batch: int | None = None,
-    target_utilization: float = TARGET_UTILIZATION,
-    wait_factor: float = WAIT_FACTOR,
     similar_pct: float = SIMILAR_PCT,
     hours_per_month: float = HOURS_PER_MONTH,
 ) -> dict[str, Any]:
@@ -234,16 +218,15 @@ def recommend(
     "offline"), min_throughput_rps (online, required), total_requests
     (offline, optional).
 
-    Row status: ok (meets the SLOs) / throughput_short (online: latency OK,
-    but even its best usable batch x target < demand) / slo_impossible (no
-    batch meets the latency SLO) / no_price / no_prediction.
+    Row status: ok (meets the SLOs) / throughput_short (online: some batch
+    meets the latency SLO, but none of them also covers the demand) /
+    slo_impossible (no batch meets the latency SLO) / no_price /
+    no_prediction.
     """
     purpose = str((slo or {}).get("purpose") or "online")
     policy = {
         "purpose": purpose,
         "latency_judgement": LATENCY_JUDGEMENT,
-        "target_utilization": target_utilization,
-        "wait_factor": wait_factor,
         "similar_pct": similar_pct,
         "hours_per_month": hours_per_month,
         "max_batch": max_batch,
@@ -253,11 +236,9 @@ def recommend(
         return {"status": "no_slo", "policy": policy, "rows": [], "cheapest": None, "similar": [], "budget_plan": None}
     if purpose not in PURPOSES:
         raise ValueError(f"purpose must be one of {PURPOSES}, got {purpose!r}")
-    if not 0 < target_utilization <= 1:
-        raise ValueError(f"target_utilization must be in (0, 1], got {target_utilization}")
     offline = purpose == "offline"
     limit = _num(slo.get("max_latency_ms"))
-    # None -> no latency limit: every predicted batch is usable, verdict "pass".
+    # None -> no latency limit: every predicted batch is usable.
     max_latency = limit if limit is not None else math.inf
     demand = None if offline else float(slo["min_throughput_rps"])
     total_requests = _num(slo.get("total_requests")) if offline else None
@@ -296,23 +277,21 @@ def recommend(
             )
             rows.append(row)
             continue
-        best = max(usable, key=lambda p: (p["rps"], -p["batch"]))
+        best = max(usable, key=lambda p: (p["rps"], p["batch"]))
         row.update(capacity_rps=best["rps"], capacity_batch=best["batch"],
                    capacity_latency_ms=best["latency_ms"])
         if offline:
-            row.update(status="ok", **evaluate_offline(usable, price, max_latency, total_requests,
-                                                       wait_factor=wait_factor, hours_per_month=hours_per_month))
+            row.update(status="ok", **evaluate_offline(usable, price, total_requests,
+                                                       hours_per_month=hours_per_month))
         else:
-            # the demand this instance can take at the target load
-            row["max_demand_rps"] = best["rps"] * target_utilization
-            if demand > best["rps"] * target_utilization * (1.0 + _EPS):
-                row.update(status="throughput_short", cost_usd_per_hour=price,
+            op = operating_point(usable, demand)
+            if op is None:
+                row.update(status="throughput_short", demand_share=demand / best["rps"],
+                           cost_usd_per_hour=price,
                            cost_usd_per_month=price * hours_per_month if price is not None else None)
                 rows.append(row)
                 continue
-            row.update(status="ok", **evaluate(usable, demand, price, max_latency,
-                                               target_utilization=target_utilization,
-                                               wait_factor=wait_factor, hours_per_month=hours_per_month))
+            row.update(status="ok", **evaluate(op, best["rps"], demand, price, hours_per_month=hours_per_month))
         if price is None:
             row["status"] = "no_price"
         row["over_budget"] = (
@@ -339,11 +318,11 @@ def recommend(
         if offline:
             fastest = min(in_budget, key=lambda r: (-r["operating_rps"], r[cost_key], r["instance_type"]))
         else:
-            fastest = min(in_budget, key=lambda r: (round(r["latency_ms"], 9), r["load_ratio"],
-                                                     r["cost_usd_per_hour"], r["instance_type"]))
-        keys = ["instance_type", "operating_batch", "latency_ms", "wait_latency_ms", "verdict", "operating_rps",
+            fastest = min(in_budget, key=lambda r: (round(r["latency_ms"], 9), r["cost_usd_per_hour"],
+                                                     r["instance_type"]))
+        keys = ["instance_type", "operating_batch", "latency_ms", "operating_rps",
                 "capacity_rps", "cost_usd_per_hour", "cost_usd_per_month"]
-        keys += ["cost_usd_per_million", "job_hours", "job_cost_usd"] if offline else ["load_ratio"]
+        keys += ["cost_usd_per_million", "job_hours", "job_cost_usd"] if offline else ["demand_share"]
         budget_plan = {key: fastest[key] for key in keys}
         budget_plan["same_as_cheapest"] = cheapest is not None and fastest["instance_type"] == cheapest["instance_type"]
 

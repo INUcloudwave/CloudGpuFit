@@ -2,9 +2,7 @@ import type { LatencyPreset, PredictPayload, SloInput } from "@/lib/types";
 
 /**
  * Latency SLO presets and how an SLO is described on screen. The numbers must
- * match orchestrator/recommendation.py (LATENCY_PRESETS_MS_PER_TOKEN,
- * TARGET_UTILIZATION, TARGET_UTILIZATION_MAX). TARGET_UTILIZATION is shown as
- * "목표 부하율" (demand / throughput), not GPU utilization.
+ * match orchestrator/recommendation.py (LATENCY_PRESETS_MS_PER_TOKEN).
  *
  * Why per output token for Generate: the predictor's latency is the whole
  * request (prefill + every generated token), so a request limit only makes
@@ -14,10 +12,6 @@ import type { LatencyPreset, PredictPayload, SloInput } from "@/lib/types";
  * latency-critical apps. 100 ms/token = 10 tokens/s, about twice an average
  * reader (~5-6 tokens/s); 50 ms/token = 20 tokens/s.
  */
-
-export const DEFAULT_TARGET_UTILIZATION = 0.8;
-export const MAX_TARGET_UTILIZATION = 0.9;
-export const MIN_TARGET_UTILIZATION = 0.5;
 
 export interface LatencyPresetSpec {
   id: Exclude<LatencyPreset, "custom" | "none">;
